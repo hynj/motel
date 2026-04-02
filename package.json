@@ -1,0 +1,35 @@
+{
+  "name": "leto",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "bun run src/index.tsx",
+    "start": "bun run src/index.tsx",
+    "cli": "bun run src/cli.ts",
+    "instructions": "bun run src/cli.ts instructions",
+    "services": "bun run src/cli.ts services",
+    "typecheck": "tsc --noEmit",
+    "otel:up": "docker compose up -d jaeger",
+    "otel:down": "docker compose down",
+    "otel:logs": "docker compose logs -f jaeger"
+  },
+  "devDependencies": {
+    "@types/bun": "1.3.8",
+    "@types/react": "^19.2.10",
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "@effect/atom-react": "^4.0.0-beta.43",
+    "@effect/opentelemetry": "^4.0.0-beta.43",
+    "@opentelemetry/api": "^1.9.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.211.0",
+    "@opentelemetry/sdk-trace-base": "^2.5.0",
+    "@opentelemetry/sdk-trace-node": "^2.5.0",
+    "@opentelemetry/semantic-conventions": "^1.39.0",
+    "@opentui/core": "^0.1.77",
+    "@opentui/react": "^0.1.77",
+    "effect": "^4.0.0-beta.43",
+    "react": "^19.2.4",
+    "scheduler": "^0.27.0"
+  }
+}

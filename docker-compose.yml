@@ -1,0 +1,9 @@
+services:
+  jaeger:
+    image: jaegertracing/all-in-one:1.76.0
+    container_name: leto-jaeger
+    restart: unless-stopped
+    ports:
+      - "27686:16686"
+      - "25317:4317"
+      - "25318:4318"
