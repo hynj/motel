@@ -1,0 +1,272 @@
+import { Schema } from "effect"
+import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi"
+
+const ErrorResponse = Schema.Struct({ error: Schema.String })
+const Meta = Schema.Struct({
+	limit: Schema.Number,
+	lookback: Schema.String,
+	returned: Schema.Number,
+	truncated: Schema.Boolean,
+	nextCursor: Schema.NullOr(Schema.String),
+}).annotate({ identifier: "ListMeta" })
+
+const TraceSpanEvent = Schema.Struct({
+	name: Schema.String.pipe(Schema.annotateKey({ description: "Event name" })),
+	timestamp: Schema.String.pipe(Schema.annotateKey({ description: "ISO 8601 timestamp" })),
+	attributes: Schema.Unknown.pipe(Schema.annotateKey({ description: "Key-value attributes attached to the event" })),
+})
+
+const TraceSpan = Schema.Struct({
+	spanId: Schema.String,
+	parentSpanId: Schema.NullOr(Schema.String),
+	serviceName: Schema.String,
+	scopeName: Schema.NullOr(Schema.String).pipe(Schema.annotateKey({ description: "Instrumentation scope (e.g. module or library name)" })),
+	kind: Schema.NullOr(Schema.String).pipe(Schema.annotateKey({ description: "Span kind: client, server, producer, consumer, or internal" })),
+	operationName: Schema.String.pipe(Schema.annotateKey({ description: "The operation this span represents (e.g. HTTP handler, DB query)" })),
+	startTime: Schema.String.pipe(Schema.annotateKey({ description: "ISO 8601 timestamp" })),
+	durationMs: Schema.Number.pipe(Schema.annotateKey({ description: "Wall-clock duration in milliseconds" })),
+	status: Schema.Literals(["ok", "error"]).pipe(Schema.annotateKey({ description: "ok or error" })),
+	depth: Schema.Number.pipe(Schema.annotateKey({ description: "Nesting depth in the span tree (root = 0)" })),
+	tags: Schema.Unknown.pipe(Schema.annotateKey({ description: "Span attributes as key-value pairs" })),
+	warnings: Schema.Array(Schema.String).pipe(Schema.annotateKey({ description: "Structural warnings (e.g. missing parent span)" })),
+	events: Schema.Array(TraceSpanEvent),
+}).annotate({ identifier: "TraceSpan" })
+
+const Trace = Schema.Struct({
+	traceId: Schema.String,
+	serviceName: Schema.String.pipe(Schema.annotateKey({ description: "Service that owns the root span" })),
+	rootOperationName: Schema.String.pipe(Schema.annotateKey({ description: "Operation name of the root span" })),
+	startedAt: Schema.String.pipe(Schema.annotateKey({ description: "ISO 8601 timestamp of the earliest span" })),
+	durationMs: Schema.Number.pipe(Schema.annotateKey({ description: "End-to-end trace duration in milliseconds" })),
+	spanCount: Schema.Number,
+	errorCount: Schema.Number.pipe(Schema.annotateKey({ description: "Number of spans with status=error" })),
+	warnings: Schema.Array(Schema.String),
+	spans: Schema.Array(TraceSpan).pipe(Schema.annotateKey({ description: "Spans ordered by parent-child hierarchy, depth-first" })),
+}).annotate({ identifier: "Trace" })
+
+const TraceSummary = Schema.Struct({
+	traceId: Schema.String,
+	serviceName: Schema.String,
+	rootOperationName: Schema.String,
+	startedAt: Schema.String,
+	durationMs: Schema.Number,
+	spanCount: Schema.Number,
+	errorCount: Schema.Number,
+	warnings: Schema.Array(Schema.String),
+}).annotate({ identifier: "TraceSummary" })
+
+const Span = Schema.Struct({
+	traceId: Schema.String,
+	rootOperationName: Schema.String.pipe(Schema.annotateKey({ description: "Operation name of the trace's root span, for context" })),
+	span: TraceSpan,
+}).annotate({ identifier: "SpanWithContext" })
+
+const Log = Schema.Struct({
+	id: Schema.String,
+	timestamp: Schema.String.pipe(Schema.annotateKey({ description: "ISO 8601 timestamp" })),
+	serviceName: Schema.String,
+	severityText: Schema.String.pipe(Schema.annotateKey({ description: "Log level: TRACE, DEBUG, INFO, WARN, ERROR, FATAL" })),
+	body: Schema.String.pipe(Schema.annotateKey({ description: "Log message body" })),
+	traceId: Schema.NullOr(Schema.String).pipe(Schema.annotateKey({ description: "Associated trace ID, if the log was emitted inside a span" })),
+	spanId: Schema.NullOr(Schema.String).pipe(Schema.annotateKey({ description: "Associated span ID, if the log was emitted inside a span" })),
+	scopeName: Schema.NullOr(Schema.String),
+	attributes: Schema.Unknown.pipe(Schema.annotateKey({ description: "Merged resource + log attributes as key-value pairs" })),
+}).annotate({ identifier: "Log" })
+
+const Facet = Schema.Struct({
+	value: Schema.String.pipe(Schema.annotateKey({ description: "Distinct value for the faceted field" })),
+	count: Schema.Number.pipe(Schema.annotateKey({ description: "Number of occurrences" })),
+}).annotate({ identifier: "Facet" })
+
+const Stat = Schema.Struct({
+	group: Schema.String.pipe(Schema.annotateKey({ description: "Grouping key" })),
+	value: Schema.Number.pipe(Schema.annotateKey({ description: "Aggregate value for the chosen metric" })),
+	count: Schema.Number.pipe(Schema.annotateKey({ description: "Number of samples in the group" })),
+}).annotate({ identifier: "Stat" })
+
+const ServiceList = Schema.Struct({ data: Schema.Array(Schema.String) })
+const TraceSummaryList = Schema.Struct({ data: Schema.Array(TraceSummary), meta: Meta })
+const SpanResponse = Schema.Struct({ data: Span })
+const TraceResponse = Schema.Struct({ data: Trace })
+const LogList = Schema.Struct({ data: Schema.Array(Log), meta: Meta })
+const FacetList = Schema.Struct({ data: Schema.Array(Facet) })
+const StatList = Schema.Struct({ data: Schema.Array(Stat) })
+
+// Shared query parameter schemas
+const LookbackParam = Schema.optionalKey(Schema.String).pipe(
+	Schema.annotateKey({ description: "Time window to look back. Examples: 30m, 1h, 6h, 1d. Default: 90m" }),
+)
+const LimitParam = Schema.optionalKey(Schema.Number).pipe(
+	Schema.annotateKey({ description: "Maximum number of results to return" }),
+)
+const CursorParam = Schema.optionalKey(Schema.String).pipe(
+	Schema.annotateKey({ description: "Opaque pagination cursor from a previous response" }),
+)
+const ServiceParam = Schema.optionalKey(Schema.String).pipe(
+	Schema.annotateKey({ description: "Filter by service name" }),
+)
+
+export const LetoHttpApi = HttpApi.make("LetoTelemetry")
+	.annotate(OpenApi.Title, "Leto Telemetry API")
+	.annotate(OpenApi.Version, "1.0.0")
+	.annotate(OpenApi.Description, "Local OpenTelemetry ingest, query, and debugging API. Accepts OTLP HTTP traces and logs, stores them in SQLite, and exposes query endpoints for TUI, CLI, and agent consumption.")
+	.add(
+		HttpApiGroup.make("telemetry")
+			.annotate(OpenApi.Description, "Query traces, spans, logs, and service metadata from the local telemetry store")
+			.add(
+				HttpApiEndpoint.get("services", "/api/services", { success: ServiceList })
+					.annotate(OpenApi.Summary, "List active services")
+					.annotate(OpenApi.Description, "Returns service names that have emitted spans or logs within the default lookback window. Use this to discover what services are reporting, then query their traces or logs."),
+
+				HttpApiEndpoint.get("traces", "/api/traces", {
+					query: {
+						service: ServiceParam,
+						limit: LimitParam,
+						lookback: LookbackParam,
+						cursor: CursorParam,
+					},
+					success: TraceSummaryList,
+				})
+					.annotate(OpenApi.Summary, "List recent traces")
+					.annotate(OpenApi.Description, "Returns compact trace summaries ordered by start time descending. Use /api/traces/{traceId} for the full span tree. Supports cursor pagination and applies default/max limit and lookback bounds."),
+
+				HttpApiEndpoint.get("searchTraces", "/api/traces/search", {
+					query: {
+						service: ServiceParam,
+						operation: Schema.optionalKey(Schema.String).pipe(
+							Schema.annotateKey({ description: "Substring match against span operation names (case-insensitive)" }),
+						),
+						status: Schema.optionalKey(Schema.Literals(["ok", "error"])).pipe(
+							Schema.annotateKey({ description: "Filter by trace health: 'error' = at least one span errored, 'ok' = no errors" }),
+						),
+						minDurationMs: Schema.optionalKey(Schema.Number).pipe(
+							Schema.annotateKey({ description: "Only return traces slower than this threshold (milliseconds)" }),
+						),
+						lookback: LookbackParam,
+						limit: LimitParam,
+						cursor: CursorParam,
+					},
+					success: TraceSummaryList,
+				})
+					.annotate(OpenApi.Summary, "Search traces with filters")
+					.annotate(OpenApi.Description, "Search compact trace summaries with filters. Use /api/traces/{traceId} for full details. Supports cursor pagination and attr.<key> filters in the query string."),
+
+				HttpApiEndpoint.get("traceStats", "/api/traces/stats", {
+					query: {
+						groupBy: Schema.String.pipe(Schema.annotateKey({ description: "Grouping field: service, operation, status, or attr.<key>" })),
+						agg: Schema.Literals(["count", "avg_duration", "p95_duration", "error_rate"]),
+						service: ServiceParam,
+						operation: Schema.optionalKey(Schema.String),
+						status: Schema.optionalKey(Schema.Literals(["ok", "error"])),
+						minDurationMs: Schema.optionalKey(Schema.Number),
+						lookback: LookbackParam,
+						limit: LimitParam,
+					},
+					success: StatList,
+					error: ErrorResponse,
+				})
+					.annotate(OpenApi.Summary, "Aggregate trace statistics")
+					.annotate(OpenApi.Description, "Returns grouped trace aggregates such as count, average duration, p95 duration, or error rate. Supports the same core filters as trace search plus groupBy dimensions like service, operation, status, and attr.<key>."),
+
+				HttpApiEndpoint.get("trace", "/api/traces/:traceId", {
+					params: {
+						traceId: Schema.String.pipe(Schema.annotateKey({ description: "Full 32-character hex trace ID" })),
+					},
+					success: TraceResponse,
+					error: ErrorResponse,
+				})
+					.annotate(OpenApi.Summary, "Get a single trace")
+					.annotate(OpenApi.Description, "Returns the full trace with all spans ordered by parent-child hierarchy. Returns 404 if the trace ID is not found or has expired."),
+
+				HttpApiEndpoint.get("traceLogs", "/api/traces/:traceId/logs", {
+					params: {
+						traceId: Schema.String.pipe(Schema.annotateKey({ description: "Full 32-character hex trace ID" })),
+					},
+					success: LogList,
+				})
+					.annotate(OpenApi.Summary, "Get logs for a trace")
+					.annotate(OpenApi.Description, "Returns all log records correlated with the given trace, across all spans. Ordered by timestamp descending."),
+
+				HttpApiEndpoint.get("span", "/api/spans/:spanId", {
+					params: {
+						spanId: Schema.String.pipe(Schema.annotateKey({ description: "Full 16-character hex span ID" })),
+					},
+					success: SpanResponse,
+					error: ErrorResponse,
+				})
+					.annotate(OpenApi.Summary, "Get a single span")
+					.annotate(OpenApi.Description, "Returns a span by its ID, including the parent trace ID and root operation name for context. Returns 404 if the span is not found."),
+
+				HttpApiEndpoint.get("logs", "/api/logs", {
+					query: {
+						service: ServiceParam,
+						traceId: Schema.optionalKey(Schema.String).pipe(
+							Schema.annotateKey({ description: "Filter logs by trace ID" }),
+						),
+						spanId: Schema.optionalKey(Schema.String).pipe(
+							Schema.annotateKey({ description: "Filter logs by span ID" }),
+						),
+						body: Schema.optionalKey(Schema.String).pipe(
+							Schema.annotateKey({ description: "Substring match against log body (case-sensitive)" }),
+						),
+						lookback: LookbackParam,
+						limit: LimitParam,
+						cursor: CursorParam,
+					},
+					success: LogList,
+				})
+					.annotate(OpenApi.Summary, "Search logs")
+					.annotate(OpenApi.Description, "Search log records by service, trace/span correlation, or body text. Supports attribute filtering via query parameters prefixed with 'attr.' (e.g. ?attr.user.id=123), cursor pagination, and bounded lookback/limit defaults. Ordered by timestamp descending."),
+
+				HttpApiEndpoint.get("searchLogs", "/api/logs/search", {
+					query: {
+						service: ServiceParam,
+						traceId: Schema.optionalKey(Schema.String),
+						spanId: Schema.optionalKey(Schema.String),
+						body: Schema.optionalKey(Schema.String),
+						lookback: LookbackParam,
+						limit: LimitParam,
+						cursor: CursorParam,
+					},
+					success: LogList,
+				})
+					.annotate(OpenApi.Summary, "Alias for log search")
+					.annotate(OpenApi.Description, "Same behavior as GET /api/logs. Exists as an explicit search endpoint for agents and scripts that distinguish list vs search routes."),
+
+				HttpApiEndpoint.get("logStats", "/api/logs/stats", {
+					query: {
+						groupBy: Schema.String.pipe(Schema.annotateKey({ description: "Grouping field: service, severity, scope, or attr.<key>" })),
+						agg: Schema.Literals(["count"]),
+						service: ServiceParam,
+						traceId: Schema.optionalKey(Schema.String),
+						spanId: Schema.optionalKey(Schema.String),
+						body: Schema.optionalKey(Schema.String),
+						limit: LimitParam,
+					},
+					success: StatList,
+					error: ErrorResponse,
+				})
+					.annotate(OpenApi.Summary, "Aggregate log statistics")
+					.annotate(OpenApi.Description, "Returns grouped log counts by fields like severity, service, scope, or attr.<key>. Useful for quickly understanding log distribution before drilling into raw entries."),
+
+				HttpApiEndpoint.get("facets", "/api/facets", {
+					query: {
+						type: Schema.Literals(["traces", "logs"]).pipe(
+							Schema.annotateKey({ description: "Data source to facet: 'traces' facets span columns, 'logs' facets log columns" }),
+						),
+						field: Schema.String.pipe(
+							Schema.annotateKey({ description: "Column to facet. Traces: service, operation, status. Logs: service, severity, scope" }),
+						),
+						service: ServiceParam,
+						lookback: LookbackParam,
+						limit: LimitParam,
+					},
+					success: FacetList,
+					error: ErrorResponse,
+				})
+					.annotate(OpenApi.Summary, "Get facet value counts")
+					.annotate(OpenApi.Description, "Returns distinct values and their counts for a given field, useful for discovering what data exists before querying. For example: ?type=logs&field=severity returns the distribution of log levels."),
+			)
+	)
+
+export const letoOpenApiSpec = OpenApi.fromApi(LetoHttpApi)

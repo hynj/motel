@@ -1,14 +1,10 @@
 import type { TraceItem } from "../domain.ts"
-import { formatDuration, formatShortDate, formatTimestamp } from "./format.ts"
+import { formatDuration, formatShortDate, formatTimestamp, traceUiUrl } from "./format.ts"
 import { AlignedHeaderLine, BlankRow, Divider, PlainLine, TextLine } from "./primitives.tsx"
 import { SpanDetailView } from "./SpanDetail.tsx"
-import { SpanPreview, spanPreviewEntries, WaterfallTimeline } from "./Waterfall.tsx"
+import { getVisibleSpans, SpanPreview, spanPreviewEntries, WaterfallTimeline } from "./Waterfall.tsx"
 import type { DetailView, LogState } from "./state.ts"
 import { colors, SEPARATOR } from "./theme.ts"
-import { resolveOtelUrl } from "../config.ts"
-
-const traceUiUrl = (traceId: string) => resolveOtelUrl(`/trace/${traceId}`)
-
 export const TraceDetailsPane = ({
 	trace,
 	traceLogsState,
@@ -16,6 +12,7 @@ export const TraceDetailsPane = ({
 	bodyLines,
 	paneWidth,
 	selectedSpanIndex,
+	collapsedSpanIds,
 	detailView,
 	onSelectSpan,
 }: {
@@ -25,10 +22,12 @@ export const TraceDetailsPane = ({
 	bodyLines: number
 	paneWidth: number
 	selectedSpanIndex: number | null
+	collapsedSpanIds: ReadonlySet<string>
 	detailView: DetailView
 	onSelectSpan: (index: number) => void
 }) => {
-	const selectedSpan = trace && selectedSpanIndex !== null ? trace.spans[selectedSpanIndex] ?? null : null
+	const filteredSpans = trace ? getVisibleSpans(trace.spans, collapsedSpanIds) : []
+	const selectedSpan = trace && selectedSpanIndex !== null ? filteredSpans[selectedSpanIndex] ?? null : null
 	const traceLogCount = traceLogsState.data.length
 	const selectedSpanLogs = selectedSpan ? traceLogsState.data.filter((log) => log.spanId === selectedSpan.spanId) : []
 	const spanLogCounts = new Map<string, number>()
@@ -93,11 +92,13 @@ export const TraceDetailsPane = ({
 							<box flexDirection="column" paddingLeft={1} paddingRight={1}>
 								<WaterfallTimeline
 									trace={trace}
+									filteredSpans={filteredSpans}
 									spanLogCounts={spanLogCounts}
 									selectedSpanLogs={selectedSpanLogs}
 									contentWidth={contentWidth}
 									bodyLines={bodyLines}
 									selectedSpanIndex={selectedSpanIndex}
+									collapsedSpanIds={collapsedSpanIds}
 									onSelectSpan={onSelectSpan}
 								/>
 							</box>

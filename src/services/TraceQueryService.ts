@@ -8,6 +8,7 @@ export class TraceQueryService extends ServiceMap.Service<
 		readonly listServices: Effect.Effect<readonly string[], Error>
 		readonly listRecentTraces: (serviceName: string, options?: { readonly lookbackMinutes?: number; readonly limit?: number }) => Effect.Effect<readonly TraceItem[], Error>
 		readonly searchTraces: (input: { readonly serviceName?: string | null; readonly operation?: string | null; readonly status?: "ok" | "error" | null; readonly minDurationMs?: number | null; readonly lookbackMinutes?: number; readonly limit?: number }) => Effect.Effect<readonly TraceItem[], Error>
+		readonly traceStats: (input: { readonly groupBy: string; readonly agg: "count" | "avg_duration" | "p95_duration" | "error_rate"; readonly serviceName?: string | null; readonly operation?: string | null; readonly status?: "ok" | "error" | null; readonly minDurationMs?: number | null; readonly lookbackMinutes?: number; readonly limit?: number; readonly attributeFilters?: Readonly<Record<string, string>> }) => Effect.Effect<readonly { readonly group: string; readonly value: number; readonly count: number }[], Error>
 		readonly getTrace: (traceId: string) => Effect.Effect<TraceItem | null, Error>
 	}
 >()("leto/TraceQueryService") {}
@@ -36,11 +37,15 @@ export const TraceQueryServiceLive = Layer.effect(
 			return yield* store.searchTraces(input)
 		})
 
+		const traceStats = Effect.fn("leto/TraceQueryService.traceStats")(function* (input: { readonly groupBy: string; readonly agg: "count" | "avg_duration" | "p95_duration" | "error_rate"; readonly serviceName?: string | null; readonly operation?: string | null; readonly status?: "ok" | "error" | null; readonly minDurationMs?: number | null; readonly lookbackMinutes?: number; readonly limit?: number; readonly attributeFilters?: Readonly<Record<string, string>> }) {
+			return yield* store.traceStats(input)
+		})
+
 		const getTrace = Effect.fn("leto/TraceQueryService.getTrace")(function* (traceId: string) {
 			yield* Effect.annotateCurrentSpan("trace.trace_id", traceId)
 			return yield* store.getTrace(traceId)
 		})
 
-		return TraceQueryService.of({ listServices, listRecentTraces, searchTraces, getTrace })
+		return TraceQueryService.of({ listServices, listRecentTraces, searchTraces, traceStats, getTrace })
 	}),
 )

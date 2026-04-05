@@ -6,11 +6,15 @@
     "dev": "bun run src/index.tsx",
     "start": "bun run src/index.tsx",
     "server": "bun run src/server.ts",
+    "test": "bun test",
     "cli": "bun run src/cli.ts",
     "instructions": "bun run src/cli.ts instructions",
     "services": "bun run src/cli.ts services",
     "logs": "bun run src/cli.ts logs",
     "trace-logs": "bun run src/cli.ts trace-logs",
+    "span": "bun run src/cli.ts span",
+    "trace-stats": "bun run src/cli.ts trace-stats",
+    "log-stats": "bun run src/cli.ts log-stats",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

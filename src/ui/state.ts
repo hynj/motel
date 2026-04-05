@@ -68,6 +68,7 @@ export const noticeAtom = Atom.make<string | null>(null).pipe(Atom.keepAlive)
 export const selectedSpanIndexAtom = Atom.make<number | null>(null).pipe(Atom.keepAlive)
 export const detailViewAtom = Atom.make<DetailView>("waterfall").pipe(Atom.keepAlive)
 export const showHelpAtom = Atom.make(false).pipe(Atom.keepAlive)
+export const collapsedSpanIdsAtom = Atom.make(new Set<string>() as ReadonlySet<string>).pipe(Atom.keepAlive)
 
 export const loadTraceServices = () => queryRuntime.runPromise(Effect.flatMap(TraceQueryService.asEffect(), (service) => service.listServices))
 export const loadRecentTraces = (serviceName: string) => queryRuntime.runPromise(Effect.flatMap(TraceQueryService.asEffect(), (service) => service.listRecentTraces(serviceName)))

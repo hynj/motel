@@ -3,6 +3,39 @@ import { formatDuration, truncateText } from "./format.ts"
 import { BlankRow, TextLine } from "./primitives.tsx"
 import { colors, waterfallColors } from "./theme.ts"
 
+/** Filter spans to only those visible given a set of collapsed span IDs. */
+export const getVisibleSpans = (spans: readonly TraceSpanItem[], collapsedIds: ReadonlySet<string>): readonly TraceSpanItem[] => {
+	if (collapsedIds.size === 0) return spans
+	const result: TraceSpanItem[] = []
+	let skipDepth = -1
+	for (const span of spans) {
+		if (skipDepth >= 0 && span.depth > skipDepth) continue
+		skipDepth = -1
+		result.push(span)
+		if (collapsedIds.has(span.spanId)) {
+			skipDepth = span.depth
+		}
+	}
+	return result
+}
+
+/** Find the index of a span's parent in the visible list. */
+export const findParentIndex = (spans: readonly TraceSpanItem[], index: number): number | null => {
+	const span = spans[index]
+	if (span.depth === 0) return null
+	for (let i = index - 1; i >= 0; i--) {
+		if (spans[i].depth < span.depth) return i
+	}
+	return null
+}
+
+/** Find the index of a span's first child in the visible list. */
+export const findFirstChildIndex = (spans: readonly TraceSpanItem[], index: number): number | null => {
+	const next = spans[index + 1]
+	if (next && next.depth > spans[index].depth) return index + 1
+	return null
+}
+
 const INTERESTING_TAGS = [
 	"http.method", "http.url", "http.status_code", "http.route",
 	"db.system", "db.statement", "db.name",
@@ -72,8 +105,8 @@ export const getWaterfallLayout = (contentWidth: number, traceDurationMs: number
 	const labelMaxWidth = Math.min(Math.floor(contentWidth * 0.4), 32)
 	const durationWidth = Math.max(8, formatDuration(traceDurationMs).length + 1)
 	const logWidth = 5
-	const barWidth = Math.max(6, contentWidth - labelMaxWidth - durationWidth - logWidth - 3)
-	return { labelMaxWidth, durationWidth, logWidth, barWidth }
+	const barWidth = Math.max(6, contentWidth - labelMaxWidth - durationWidth - logWidth - 2)
+	return { labelMaxWidth, durationWidth, logWidth, barWidth } as const
 }
 
 export const spanPreviewEntries = (span: TraceSpanItem, logs: readonly LogItem[], maxEntries: number): Array<{ key: string; value: string; isWarning?: boolean }> => {
@@ -107,6 +140,8 @@ const WaterfallRow = ({
 	spans,
 	contentWidth,
 	selected,
+	collapsed,
+	hasChildSpans,
 	onSelect,
 }: {
 	span: TraceSpanItem
@@ -116,15 +151,17 @@ const WaterfallRow = ({
 	spans: readonly TraceSpanItem[]
 	contentWidth: number
 	selected: boolean
+	collapsed: boolean
+	hasChildSpans: boolean
 	onSelect: () => void
 }) => {
 	const prefix = buildTreePrefix(spans, index)
-	const indicator = span.status === "error" ? "!" : "\u00b7"
+	const indicator = span.status === "error" ? "!" : hasChildSpans ? (collapsed ? "\u25b8" : "\u25be") : "\u00b7"
 	const opName = span.operationName
 	const duration = formatDuration(span.durationMs)
 	const logText = logCount > 0 ? `${logCount}lg` : ""
 
-	const { labelMaxWidth, logWidth, barWidth } = getWaterfallLayout(contentWidth, trace.durationMs)
+	const { labelMaxWidth, durationWidth, logWidth, barWidth } = getWaterfallLayout(contentWidth, trace.durationMs)
 
 	const opMaxWidth = Math.max(4, labelMaxWidth - prefix.length - 2)
 	const opTruncated = opName.length > opMaxWidth ? `${opName.slice(0, opMaxWidth - 1)}\u2026` : opName
@@ -135,7 +172,7 @@ const WaterfallRow = ({
 	const isError = span.status === "error"
 	const barColor = selected ? (isError ? waterfallColors.barSelectedError : waterfallColors.barSelected) : isError ? waterfallColors.barError : waterfallColors.bar
 	const bg = selected ? colors.selectedBg : undefined
-	const treeColor = selected ? colors.separator : "#524d45"
+	const treeColor = selected ? colors.separator : colors.treeLine
 	const indicatorColor = isError ? colors.error : selected ? colors.passing : colors.muted
 	const opColor = selected ? colors.selectedText : colors.text
 
@@ -151,7 +188,7 @@ const WaterfallRow = ({
 				<span fg={barColor}>{bar}</span>
 				<span fg={waterfallColors.barBg}>{after}</span>
 				<span> </span>
-				<span fg={selected ? colors.accent : colors.count}>{duration}</span>
+				<span fg={selected ? colors.accent : colors.count}>{duration.padStart(durationWidth)}</span>
 				<span>{" ".repeat(Math.max(0, logWidth - logText.length))}</span>
 				<span fg={logCount > 0 ? colors.defaultService : colors.muted}>{logText}</span>
 			</TextLine>
@@ -199,7 +236,7 @@ export const SpanPreview = ({
 		<box flexDirection="column">
 			{lines.slice(0, maxLines).map((line, i) => (
 				<TextLine key={`preview-${i}`}>
-					<span fg={line.isWarning ? colors.error : "#6a6358"}>{line.keyPart}</span>
+					<span fg={line.isWarning ? colors.error : colors.previewKey}>{line.keyPart}</span>
 					<span fg={colors.separator}>  </span>
 					<span fg={line.isWarning ? colors.error : colors.muted}>{line.valPart}</span>
 				</TextLine>
@@ -210,22 +247,26 @@ export const SpanPreview = ({
 
 export const WaterfallTimeline = ({
 	trace,
+	filteredSpans,
 	spanLogCounts,
 	selectedSpanLogs,
 	contentWidth,
 	bodyLines,
 	selectedSpanIndex,
+	collapsedSpanIds,
 	onSelectSpan,
 }: {
 	trace: TraceItem
+	filteredSpans: readonly TraceSpanItem[]
 	spanLogCounts: ReadonlyMap<string, number>
 	selectedSpanLogs: readonly LogItem[]
 	contentWidth: number
 	bodyLines: number
 	selectedSpanIndex: number | null
+	collapsedSpanIds: ReadonlySet<string>
 	onSelectSpan: (index: number) => void
 }) => {
-	const selectedSpan = selectedSpanIndex !== null ? trace.spans[selectedSpanIndex] ?? null : null
+	const selectedSpan = selectedSpanIndex !== null ? filteredSpans[selectedSpanIndex] ?? null : null
 	const previewTagCount = selectedSpan ? spanPreviewEntries(selectedSpan, selectedSpanLogs, 99).length : 0
 	const previewLines = selectedSpan ? Math.min(Math.max(previewTagCount, 1), Math.max(2, Math.floor(bodyLines * 0.4))) : 0
 	const waterfallLines = bodyLines - 1 - previewLines
@@ -236,16 +277,21 @@ export const WaterfallTimeline = ({
 
 	const rulerLabel = " ".repeat(labelMaxWidth + 1)
 	const midPoint = Math.floor(barWidth / 2)
-	const rulerBar = `${"0".padEnd(midPoint)}${midDuration.padEnd(barWidth - midPoint)}${endDuration.padStart(durationWidth)}`
+	const rulerBar = `${"0".padEnd(midPoint)}${midDuration.padEnd(barWidth - midPoint)} ${endDuration.padStart(durationWidth)}`
 
 	const spanWindowSize = Math.max(1, waterfallLines)
 	const windowStart = selectedSpanIndex === null
 		? 0
-		: Math.max(0, Math.min(selectedSpanIndex - Math.floor(spanWindowSize / 2), trace.spans.length - spanWindowSize))
-	const visibleSpans = trace.spans.slice(windowStart, windowStart + spanWindowSize)
-	const blankCount = Math.max(0, spanWindowSize - visibleSpans.length)
+		: Math.max(0, Math.min(selectedSpanIndex - Math.floor(spanWindowSize / 2), filteredSpans.length - spanWindowSize))
+	const windowSpans = filteredSpans.slice(windowStart, windowStart + spanWindowSize)
+	const blankCount = Math.max(0, spanWindowSize - windowSpans.length)
 
 	const remainingBlanks = Math.max(0, blankCount - (selectedSpan ? 0 : previewLines))
+
+	const spanIndexById = new Map<string, number>()
+	for (let i = 0; i < trace.spans.length; i++) {
+		spanIndexById.set(trace.spans[i].spanId, i)
+	}
 
 	return (
 		<box flexDirection="column">
@@ -253,8 +299,9 @@ export const WaterfallTimeline = ({
 				<span>{rulerLabel}</span>
 				<span>{rulerBar}</span>
 			</TextLine>
-			{visibleSpans.map((span, index) => {
+			{windowSpans.map((span, index) => {
 				const actualIndex = windowStart + index
+				const fullIndex = spanIndexById.get(span.spanId) ?? -1
 
 				return (
 				<WaterfallRow
@@ -262,10 +309,12 @@ export const WaterfallTimeline = ({
 					span={span}
 					logCount={spanLogCounts.get(span.spanId) ?? 0}
 					trace={trace}
-					index={actualIndex}
+					index={fullIndex}
 					spans={trace.spans}
 					contentWidth={contentWidth}
 					selected={selectedSpanIndex === actualIndex}
+					collapsed={collapsedSpanIds.has(span.spanId)}
+					hasChildSpans={fullIndex >= 0 && findFirstChildIndex(trace.spans, fullIndex) !== null}
 					onSelect={() => onSelectSpan(actualIndex)}
 				/>
 				)

@@ -7,6 +7,7 @@ import { fitCell, formatShortDate, formatTimestamp, traceRowId } from "./ui/form
 import { AlignedHeaderLine, BlankRow, Divider, FooterHints, PlainLine, SeparatorColumn, TextLine } from "./ui/primitives.tsx"
 import { ServiceLogsView } from "./ui/ServiceLogs.tsx"
 import {
+	collapsedSpanIdsAtom,
 	detailViewAtom,
 	initialLogState,
 	initialServiceLogState,
@@ -25,8 +26,9 @@ import {
 	showHelpAtom,
 	traceStateAtom,
 } from "./ui/state.ts"
-import { colors, DETAIL_DIVIDER_ROW } from "./ui/theme.ts"
+import { colors, DETAIL_DIVIDER_ROW, SEPARATOR } from "./ui/theme.ts"
 import { TraceDetailsPane } from "./ui/TraceDetailsPane.tsx"
+import { getVisibleSpans } from "./ui/Waterfall.tsx"
 import { TraceList } from "./ui/TraceList.tsx"
 import { useKeyboardNav } from "./ui/useKeyboardNav.ts"
 
@@ -43,6 +45,7 @@ export const App = () => {
 	const [selectedSpanIndex, setSelectedSpanIndex] = useAtom(selectedSpanIndexAtom)
 	const [detailView, setDetailView] = useAtom(detailViewAtom)
 	const [showHelp, setShowHelp] = useAtom(showHelpAtom)
+	const [collapsedSpanIds, setCollapsedSpanIds] = useAtom(collapsedSpanIdsAtom)
 
 	// Layout calculations
 	const contentWidth = Math.max(60, width ?? 100)
@@ -55,7 +58,7 @@ export const App = () => {
 	const footerFrameHeight = footerHeight > 0 ? 1 + footerHeight : 0
 	const frameHeight = 1 + 1 + footerFrameHeight
 	const availableContentHeight = Math.max(10, (height ?? 24) - frameHeight)
-	const leftPaneWidth = isWideLayout ? Math.max(44, Math.floor((contentWidth - splitGap) * 0.56)) : contentWidth
+	const leftPaneWidth = isWideLayout ? Math.max(44, Math.floor((contentWidth - splitGap) * 0.38)) : contentWidth
 	const rightPaneWidth = isWideLayout ? Math.max(28, contentWidth - leftPaneWidth - splitGap) : contentWidth
 	const dividerJunctionAt = Math.max(1, leftPaneWidth)
 	const leftContentWidth = isWideLayout ? Math.max(24, leftPaneWidth - 3) : Math.max(24, contentWidth - sectionPadding * 2)
@@ -155,7 +158,13 @@ export const App = () => {
 
 	const selectedTrace = traceState.data[selectedTraceIndex] ?? null
 
-	// Clamp span index
+	// Reset collapsed spans and span selection when trace changes
+	useEffect(() => {
+		setCollapsedSpanIds(new Set())
+		setSelectedSpanIndex(null)
+	}, [selectedTrace?.traceId])
+
+	// Clamp span index against visible (filtered) span count
 	useEffect(() => {
 		if (selectedSpanIndex === null) return
 		if (!selectedTrace || selectedTrace.spans.length === 0) {
@@ -163,10 +172,11 @@ export const App = () => {
 			setDetailView("waterfall")
 			return
 		}
-		if (selectedSpanIndex >= selectedTrace.spans.length) {
-			setSelectedSpanIndex(selectedTrace.spans.length - 1)
+		const visibleCount = getVisibleSpans(selectedTrace.spans, collapsedSpanIds).length
+		if (selectedSpanIndex >= visibleCount) {
+			setSelectedSpanIndex(visibleCount - 1)
 		}
-	}, [selectedTrace, selectedSpanIndex, setSelectedSpanIndex, setDetailView])
+	}, [selectedTrace, selectedSpanIndex, collapsedSpanIds, setSelectedSpanIndex, setDetailView])
 
 	// Scroll selected trace into view
 	useEffect(() => {
@@ -285,27 +295,12 @@ export const App = () => {
 
 	// Keyboard navigation
 	const { spanNavActive } = useKeyboardNav({
-		traceState,
-		serviceLogState,
 		selectedTrace,
-		selectedTraceIndex,
-		selectedSpanIndex,
-		selectedServiceLogIndex,
-		selectedTraceService,
-		detailView,
-		showHelp,
 		isWideLayout,
 		wideBodyLines,
 		narrowBodyLines,
 		tracePageSize,
 		spanPageSize,
-		setSelectedTraceIndex,
-		setSelectedSpanIndex,
-		setSelectedServiceLogIndex,
-		setSelectedTraceService,
-		setDetailView,
-		setShowHelp,
-		setRefreshNonce,
 		flashNotice,
 	})
 
@@ -326,7 +321,8 @@ export const App = () => {
 
 	const selectSpan = (index: number) => {
 		if (!selectedTrace) return
-		setSelectedSpanIndex(Math.max(0, Math.min(index, selectedTrace.spans.length - 1)))
+		const visibleCount = getVisibleSpans(selectedTrace.spans, collapsedSpanIds).length
+		setSelectedSpanIndex(Math.max(0, Math.min(index, visibleCount - 1)))
 	}
 
 	const traceListProps = {
@@ -350,13 +346,13 @@ export const App = () => {
 				<box flexGrow={1} flexDirection="column" paddingLeft={1} paddingRight={1}>
 					<AlignedHeaderLine
 						left="SERVICE LOGS"
-						right={`${serviceLogState.data.length} logs${serviceLogState.fetchedAt ? ` \u00b7 ${formatShortDate(serviceLogState.fetchedAt)} ${formatTimestamp(serviceLogState.fetchedAt)}` : ""}`}
+						right={`${serviceLogState.data.length} logs${serviceLogState.fetchedAt ? `${SEPARATOR}${formatShortDate(serviceLogState.fetchedAt)} ${formatTimestamp(serviceLogState.fetchedAt)}` : ""}`}
 						width={headerFooterWidth}
 						rightFg={colors.count}
 					/>
 					<TextLine>
 						<span fg={colors.defaultService}>{selectedTraceService ?? "unknown"}</span>
-						<span fg={colors.separator}>{" \u00b7 "}</span>
+						<span fg={colors.separator}>{SEPARATOR}</span>
 						<span fg={colors.count}>recent logs</span>
 					</TextLine>
 					<BlankRow />
@@ -380,13 +376,13 @@ export const App = () => {
 					<SeparatorColumn height={wideBodyHeight} junctionRow={DETAIL_DIVIDER_ROW} />
 					<box width={rightPaneWidth} height={wideBodyHeight} flexDirection="column">
 						<scrollbox height={wideBodyHeight} flexGrow={0}>
-							<TraceDetailsPane trace={selectedTrace} traceLogsState={logState} contentWidth={rightContentWidth} bodyLines={wideBodyLines} paneWidth={rightPaneWidth} selectedSpanIndex={selectedSpanIndex} detailView={detailView} onSelectSpan={selectSpan} />
+							<TraceDetailsPane trace={selectedTrace} traceLogsState={logState} contentWidth={rightContentWidth} bodyLines={wideBodyLines} paneWidth={rightPaneWidth} selectedSpanIndex={selectedSpanIndex} collapsedSpanIds={collapsedSpanIds} detailView={detailView} onSelectSpan={selectSpan} />
 						</scrollbox>
 					</box>
 				</box>
 			) : (
 				<>
-					<TraceDetailsPane trace={selectedTrace} traceLogsState={logState} contentWidth={rightContentWidth} bodyLines={narrowBodyLines} paneWidth={contentWidth} selectedSpanIndex={selectedSpanIndex} detailView={detailView} onSelectSpan={selectSpan} />
+					<TraceDetailsPane trace={selectedTrace} traceLogsState={logState} contentWidth={rightContentWidth} bodyLines={narrowBodyLines} paneWidth={contentWidth} selectedSpanIndex={selectedSpanIndex} collapsedSpanIds={collapsedSpanIds} detailView={detailView} onSelectSpan={selectSpan} />
 					<Divider width={contentWidth} />
 					<box height={narrowListHeight} flexDirection="column" paddingLeft={sectionPadding} paddingRight={sectionPadding}>
 						<TraceList showHeader {...traceListProps} />

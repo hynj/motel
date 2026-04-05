@@ -34,6 +34,23 @@ export interface TraceItem {
 	readonly spans: readonly TraceSpanItem[]
 }
 
+export interface TraceSummaryItem {
+	readonly traceId: string
+	readonly serviceName: string
+	readonly rootOperationName: string
+	readonly startedAt: Date
+	readonly durationMs: number
+	readonly spanCount: number
+	readonly errorCount: number
+	readonly warnings: readonly string[]
+}
+
+export interface SpanItem {
+	readonly traceId: string
+	readonly rootOperationName: string
+	readonly span: TraceSpanItem
+}
+
 export interface LogItem {
 	readonly id: string
 	readonly timestamp: Date

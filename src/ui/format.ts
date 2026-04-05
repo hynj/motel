@@ -1,3 +1,4 @@
+import { resolveOtelUrl } from "../config.ts"
 import type { LogItem, TraceItem, TraceSpanItem } from "../domain.ts"
 import { colors } from "./theme.ts"
 
@@ -88,6 +89,8 @@ export const relevantLogAttributes = (log: LogItem) =>
 			"traceId",
 		].includes(key),
 	)
+
+export const traceUiUrl = (traceId: string) => resolveOtelUrl(`/trace/${traceId}`)
 
 export const copyToClipboard = async (value: string) => {
 	const proc = Bun.spawn({

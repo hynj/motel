@@ -1,9 +1,8 @@
 import type { LogItem } from "../domain.ts"
-import { fitCell, formatTimestamp, logHeadline, logSeverityColor, relevantLogAttributes, truncateText, wrapTextLines } from "./format.ts"
+import { fitCell, formatLogTimestamp, formatTimestamp, logHeadline, logSeverityColor, relevantLogAttributes, truncateText, wrapTextLines } from "./format.ts"
 import { BlankRow, Divider, PlainLine, TextLine } from "./primitives.tsx"
 import type { ServiceLogState } from "./state.ts"
 import { colors, SEPARATOR } from "./theme.ts"
-import { formatLogTimestamp } from "./format.ts"
 
 export const ServiceLogsView = ({
 	serviceName,

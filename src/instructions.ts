@@ -1,61 +1,47 @@
 import { config } from "./config.js"
 
-export const effectSetupInstructions = () => `Set this app up to export local OpenTelemetry traces and logs to my local leto dev server.
+export const effectSetupInstructions = () => `Set this app up to export local traces and logs to my local leto dev server.
 
 Target endpoints:
 - OTLP HTTP traces: ${config.otel.exporterUrl}
 - OTLP HTTP logs: ${config.otel.logsExporterUrl}
 - leto local API / UI: ${config.otel.queryUrl}
 
-If this codebase uses Effect beta, wire observability like this:
+This repo uses Effect beta. Keep the change minimal and idiomatic for the target repo.
 
-1. Install dependencies:
-   bun add @effect/opentelemetry @opentelemetry/exporter-trace-otlp-http @opentelemetry/exporter-logs-otlp-http @opentelemetry/sdk-trace-base @opentelemetry/sdk-logs
+Requirements:
+1. First inspect the repo's existing Effect runtime wiring and observability patterns.
 
-2. Add a telemetry layer:
+2. Prefer the repo's existing Effect-native observability APIs if available.
+   - If effect/unstable/observability is already the best fit, use that instead of adding @effect/opentelemetry.
+   - Only add new OpenTelemetry SDK packages if the repo already uses them or they are clearly required.
 
-import * as NodeSdk from "@effect/opentelemetry/NodeSdk"
-import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http"
-import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-http"
-import { SimpleSpanProcessor } from "@opentelemetry/sdk-trace-base"
-import { SimpleLogRecordProcessor } from "@opentelemetry/sdk-logs"
+3. Add a shared telemetry layer that exports:
+   - traces to ${config.otel.exporterUrl}
+   - logs to ${config.otel.logsExporterUrl}
 
-const TelemetryLive = NodeSdk.layer(() => ({
-  spanProcessor: new SimpleSpanProcessor(
-    new OTLPTraceExporter({
-      url: "${config.otel.exporterUrl}",
-    }),
-  ),
-  logRecordProcessor: new SimpleLogRecordProcessor(
-    new OTLPLogExporter({
-      url: "${config.otel.logsExporterUrl}",
-    }),
-  ),
-  loggerMergeWithExisting: false,
-  resource: {
-    serviceName: "<replace-service-name>",
-    attributes: {
-      "deployment.environment.name": "local",
-    },
-  },
-}))
+4. Merge that layer into the main runtime once, not per-feature.
 
-3. Merge that layer into the main runtime.
+5. Wrap meaningful workflows with Effect.fn("...") and a few useful child spans.
 
-4. Wrap meaningful workflows with Effect.fn("...") and child spans.
+6. Emit Effect.logInfo / Effect.logWarning / Effect.logError in those workflows.
 
-5. Emit structured logs with Effect.logInfo / Effect.logWarning / Effect.logError inside those spans.
+7. Prefer structured log annotations so important fields are queryable, not only embedded in the log body.
 
-6. Add useful span events / annotations when a workflow has notable milestones.
+8. Add useful span annotations and events for milestones.
 
-7. Verify traces and logs:
-   curl ${config.otel.queryUrl}/api/services
-   curl "${config.otel.queryUrl}/api/traces?service=<service-name>&limit=20&lookback=1h"
-   curl "${config.otel.queryUrl}/api/traces/search?service=<service-name>&operation=<text-fragment>&status=error"
-   curl ${config.otel.queryUrl}/api/logs?service=<service-name>
-   curl ${config.otel.queryUrl}/api/logs?service=<service-name>&body=<text-fragment>
-   curl ${config.otel.queryUrl}/api/facets?type=logs&field=severity
-   bun run cli logs <service-name>
-   bun run cli search-logs <service-name> <text-fragment>
+9. Focus on the server and runtime paths where Effect is already used. I want to inspect which spans take the most time in a normal agent or session flow.
 
-Keep the change minimal and idiomatic for the target repo.`
+10. Verify with:
+    curl ${config.otel.queryUrl}/api/services
+    curl "${config.otel.queryUrl}/api/traces?service=<service-name>&limit=20&lookback=1h"
+    curl "${config.otel.queryUrl}/api/traces/search?service=<service-name>&operation=<text-fragment>&status=error&attr.sessionID=<session-id>"
+    curl "${config.otel.queryUrl}/api/traces/stats?groupBy=operation&agg=p95_duration&service=<service-name>"
+    curl "${config.otel.queryUrl}/api/spans/<span-id>"
+    curl "${config.otel.queryUrl}/api/logs?service=<service-name>"
+    curl "${config.otel.queryUrl}/api/logs/search?service=<service-name>&body=<text-fragment>"
+    curl "${config.otel.queryUrl}/api/logs/stats?groupBy=severity&agg=count&service=<service-name>"
+    curl "${config.otel.queryUrl}/api/facets?type=logs&field=severity"
+    curl ${config.otel.queryUrl}/openapi.json
+
+Use the repo's existing patterns where possible. Avoid adding new observability infrastructure unless the target repo truly needs it.`

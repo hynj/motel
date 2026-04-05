@@ -7,11 +7,15 @@ OpenTUI local OTEL viewer for development, with a local SQLite-backed telemetry 
 - `bun install`
 - `bun run server`
 - `bun run dev`
+- `bun run test`
 - `bun run cli services`
 - `bun run cli traces <service>`
+- `bun run cli span <span-id>`
 - `bun run cli search-traces <service> [operation]`
+- `bun run cli trace-stats <groupBy> <agg> [service]`
 - `bun run cli logs <service>`
 - `bun run cli search-logs <service> [body]`
+- `bun run cli log-stats <groupBy> [service]`
 - `bun run cli trace-logs <trace-id>`
 - `bun run cli facets <traces|logs> <field>`
 - `bun run instructions`
@@ -38,10 +42,15 @@ Agents and scripts can query traces and logs from the local API:
 ```bash
 http://127.0.0.1:27686/api/services
 http://127.0.0.1:27686/api/traces?service=<service>&limit=20&lookback=1h
-http://127.0.0.1:27686/api/traces/search?service=<service>&operation=proxy&status=error
+http://127.0.0.1:27686/api/traces/search?service=<service>&operation=proxy&status=error&attr.sessionID=<session-id>
+http://127.0.0.1:27686/api/traces/stats?groupBy=operation&agg=p95_duration&service=<service>
+http://127.0.0.1:27686/api/spans/<span-id>
 http://127.0.0.1:27686/api/logs?service=<service>&body=proxy_request
 http://127.0.0.1:27686/api/logs?service=<service>&attr.service.name=<service>
+http://127.0.0.1:27686/api/logs/stats?groupBy=severity&agg=count&service=<service>
 http://127.0.0.1:27686/api/facets?type=logs&field=severity
+http://127.0.0.1:27686/openapi.json
+http://127.0.0.1:27686/docs
 ```
 
 ## TUI keys
@@ -99,10 +108,13 @@ curl http://127.0.0.1:27686/api/traces/<trace-id>
 ```bash
 bun run cli services
 bun run cli traces my-service 20
+bun run cli span <span-id>
 bun run cli search-traces my-service proxy
+bun run cli trace-stats operation p95_duration my-service
 bun run cli trace <trace-id>
 bun run cli logs my-service
 bun run cli search-logs my-service timeout
+bun run cli log-stats severity my-service
 bun run cli trace-logs <trace-id>
 bun run cli facets logs severity
 bun run instructions

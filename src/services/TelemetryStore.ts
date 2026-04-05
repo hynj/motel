@@ -3,7 +3,7 @@ import { mkdirSync } from "node:fs"
 import { dirname } from "node:path"
 import { Clock, Effect, Layer, ServiceMap } from "effect"
 import { config } from "../config.js"
-import type { LogItem, TraceItem, TraceSpanEvent, TraceSpanItem } from "../domain.js"
+import type { LogItem, SpanItem, TraceItem, TraceSpanEvent, TraceSpanItem } from "../domain.js"
 import { attributeMap, nanosToMilliseconds, parseAnyValue, spanKindLabel, spanStatusLabel, stringifyValue, type OtlpLogExportRequest, type OtlpTraceExportRequest } from "../otlp.js"
 
 interface SpanRow {
@@ -50,12 +50,32 @@ interface TraceSearch {
 	readonly operation?: string | null
 	readonly status?: "ok" | "error" | null
 	readonly minDurationMs?: number | null
+	readonly attributeFilters?: Readonly<Record<string, string>>
+	readonly lookbackMinutes?: number
+	readonly limit?: number
+}
+
+interface TraceStatsSearch extends TraceSearch {
+	readonly groupBy: string
+	readonly agg: "count" | "avg_duration" | "p95_duration" | "error_rate"
+	readonly limit?: number
+}
+
+interface LogStatsSearch extends LogSearch {
+	readonly groupBy: string
+	readonly agg: "count"
 	readonly lookbackMinutes?: number
 	readonly limit?: number
 }
 
 interface FacetItem {
 	readonly value: string
+	readonly count: number
+}
+
+interface StatsItem {
+	readonly group: string
+	readonly value: number
 	readonly count: number
 }
 
@@ -100,7 +120,10 @@ const parseSpanRow = (row: SpanRow): TraceSpanItem => ({
 	durationMs: row.duration_ms,
 	status: row.status === "error" ? "error" : "ok",
 	depth: 0,
-	tags: parseRecord(row.attributes_json),
+	tags: {
+		...parseRecord(row.resource_json),
+		...parseRecord(row.attributes_json),
+	},
 	warnings: [],
 	events: parseEvents(row.events_json),
 })
@@ -171,6 +194,27 @@ const buildTrace = (traceId: string, spanRows: readonly SpanRow[]): TraceItem =>
 	}
 }
 
+const buildSpanItem = (traceId: string, spanRows: readonly SpanRow[], spanId: string): SpanItem | null => {
+	const trace = buildTrace(traceId, spanRows)
+	const span = trace.spans.find((candidate) => candidate.spanId === spanId)
+	if (!span) return null
+	return {
+		traceId,
+		rootOperationName: trace.rootOperationName,
+		span,
+	}
+}
+
+const matchesAttributes = (attributes: Readonly<Record<string, string>>, filters: Readonly<Record<string, string>> | undefined) =>
+	!filters || Object.entries(filters).every(([key, value]) => attributes[key] === value)
+
+const percentile = (values: readonly number[], ratio: number) => {
+	if (values.length === 0) return 0
+	const sorted = [...values].sort((left, right) => left - right)
+	const index = Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * ratio) - 1))
+	return sorted[index] ?? 0
+}
+
 export class TelemetryStore extends ServiceMap.Service<
 	TelemetryStore,
 	{
@@ -179,13 +223,32 @@ export class TelemetryStore extends ServiceMap.Service<
 		readonly listServices: Effect.Effect<readonly string[], Error>
 		readonly listRecentTraces: (serviceName: string | null, options?: { readonly lookbackMinutes?: number; readonly limit?: number }) => Effect.Effect<readonly TraceItem[], Error>
 		readonly searchTraces: (input: TraceSearch) => Effect.Effect<readonly TraceItem[], Error>
+		readonly traceStats: (input: TraceStatsSearch) => Effect.Effect<readonly StatsItem[], Error>
 		readonly getTrace: (traceId: string) => Effect.Effect<TraceItem | null, Error>
+		readonly getSpan: (spanId: string) => Effect.Effect<SpanItem | null, Error>
 		readonly searchLogs: (input: LogSearch) => Effect.Effect<readonly LogItem[], Error>
+		readonly logStats: (input: LogStatsSearch) => Effect.Effect<readonly StatsItem[], Error>
 		readonly listFacets: (input: FacetSearch) => Effect.Effect<readonly FacetItem[], Error>
 		readonly listRecentLogs: (serviceName: string) => Effect.Effect<readonly LogItem[], Error>
 		readonly listTraceLogs: (traceId: string) => Effect.Effect<readonly LogItem[], Error>
 	}
 >()("leto/TelemetryStore") {}
+
+export interface TelemetryStoreOptions {
+	readonly databasePath: string
+	readonly retentionHours: number
+	readonly traceLookbackMinutes: number
+	readonly traceFetchLimit: number
+	readonly logFetchLimit: number
+}
+
+const defaultOptions: TelemetryStoreOptions = {
+	databasePath: config.otel.databasePath,
+	retentionHours: config.otel.retentionHours,
+	traceLookbackMinutes: config.otel.traceLookbackMinutes,
+	traceFetchLimit: config.otel.traceFetchLimit,
+	logFetchLimit: config.otel.logFetchLimit,
+}
 
 export const TelemetryStoreLive = Layer.sync(
 	TelemetryStore,
@@ -385,19 +448,19 @@ export const TelemetryStoreLive = Layer.sync(
 			return yield* Effect.sync(() => {
 				const traceIdRows = serviceName
 					? (db.query(`
-						SELECT trace_id, MAX(start_time_ms) AS latest_start
+						SELECT trace_id, MIN(start_time_ms) AS trace_start
 						FROM spans
 						WHERE service_name = ? AND start_time_ms >= ?
 						GROUP BY trace_id
-						ORDER BY latest_start DESC
+						ORDER BY trace_start DESC
 						LIMIT ?
 					`).all(serviceName, cutoff, limit) as Array<{ trace_id: string }>)
 					: (db.query(`
-						SELECT trace_id, MAX(start_time_ms) AS latest_start
+						SELECT trace_id, MIN(start_time_ms) AS trace_start
 						FROM spans
 						WHERE start_time_ms >= ?
 						GROUP BY trace_id
-						ORDER BY latest_start DESC
+						ORDER BY trace_start DESC
 						LIMIT ?
 					`).all(cutoff, limit) as Array<{ trace_id: string }>)
 
@@ -434,28 +497,37 @@ export const TelemetryStoreLive = Layer.sync(
 			})
 		})
 
+		const getSpan = Effect.fn("leto/TelemetryStore.getSpan")(function* (spanId: string) {
+			return yield* Effect.sync(() => {
+				const row = db.query(`SELECT trace_id FROM spans WHERE span_id = ? LIMIT 1`).get(spanId) as { trace_id: string } | null
+				if (!row) return null
+				const spanRows = db.query(`SELECT * FROM spans WHERE trace_id = ? ORDER BY start_time_ms ASC`).all(row.trace_id) as SpanRow[]
+				return buildSpanItem(row.trace_id, spanRows, spanId)
+			})
+		})
+
 		const searchTraces = Effect.fn("leto/TelemetryStore.searchTraces")(function* (input: TraceSearch) {
 			yield* cleanupExpired()
 			const cutoff = (yield* Clock.currentTimeMillis) - (input.lookbackMinutes ?? config.otel.traceLookbackMinutes) * 60 * 1000
 			const limit = input.limit ?? config.otel.traceFetchLimit
-			const candidateLimit = Math.max(limit * 10, 200)
+			const candidateLimit = Object.keys(input.attributeFilters ?? {}).length > 0 ? Math.max(limit * 20, 500) : Math.max(limit * 10, 200)
 
 			return yield* Effect.sync(() => {
 				const traceIdRows = input.serviceName
 					? (db.query(`
-						SELECT trace_id, MAX(start_time_ms) AS latest_start
+						SELECT trace_id, MIN(start_time_ms) AS trace_start
 						FROM spans
 						WHERE service_name = ? AND start_time_ms >= ?
 						GROUP BY trace_id
-						ORDER BY latest_start DESC
+						ORDER BY trace_start DESC
 						LIMIT ?
 					`).all(input.serviceName, cutoff, candidateLimit) as Array<{ trace_id: string }>)
 					: (db.query(`
-						SELECT trace_id, MAX(start_time_ms) AS latest_start
+						SELECT trace_id, MIN(start_time_ms) AS trace_start
 						FROM spans
 						WHERE start_time_ms >= ?
 						GROUP BY trace_id
-						ORDER BY latest_start DESC
+						ORDER BY trace_start DESC
 						LIMIT ?
 					`).all(cutoff, candidateLimit) as Array<{ trace_id: string }>)
 
@@ -488,6 +560,7 @@ export const TelemetryStoreLive = Layer.sync(
 							const needle = input.operation.toLowerCase()
 							if (!trace.spans.some((span) => span.operationName.toLowerCase().includes(needle))) return false
 						}
+						if (input.attributeFilters && !trace.spans.some((span) => matchesAttributes(span.tags, input.attributeFilters))) return false
 						return true
 					})
 					.slice(0, limit)
@@ -536,6 +609,80 @@ export const TelemetryStoreLive = Layer.sync(
 
 				return filtered.slice(0, limit)
 			})
+		})
+
+		const traceStats = Effect.fn("leto/TelemetryStore.traceStats")(function* (input: TraceStatsSearch) {
+			const traces = yield* searchTraces({
+				serviceName: input.serviceName,
+				operation: input.operation,
+				status: input.status,
+				minDurationMs: input.minDurationMs,
+				attributeFilters: input.attributeFilters,
+				lookbackMinutes: input.lookbackMinutes,
+				limit: Math.max(5000, input.limit ?? config.otel.traceFetchLimit),
+			})
+
+			const groups = new Map<string, TraceItem[]>()
+			for (const trace of traces) {
+				const group = input.groupBy === "service"
+					? trace.serviceName
+					: input.groupBy === "operation"
+						? trace.rootOperationName
+						: input.groupBy === "status"
+							? trace.errorCount > 0 ? "error" : "ok"
+							: input.groupBy.startsWith("attr.")
+								? trace.spans.find((span) => span.tags[input.groupBy.slice(5)] !== undefined)?.tags[input.groupBy.slice(5)] ?? "unknown"
+								: "unknown"
+				const bucket = groups.get(group) ?? []
+				bucket.push(trace)
+				groups.set(group, bucket)
+			}
+
+			const rows = [...groups.entries()].map(([group, items]) => {
+				const durations = items.map((item) => item.durationMs)
+				const errorCount = items.filter((item) => item.errorCount > 0).length
+				const value = input.agg === "count"
+					? items.length
+					: input.agg === "avg_duration"
+						? durations.reduce((sum, duration) => sum + duration, 0) / Math.max(1, durations.length)
+						: input.agg === "p95_duration"
+							? percentile(durations, 0.95)
+							: errorCount / Math.max(1, items.length)
+
+				return { group, value, count: items.length }
+			})
+
+			return rows.sort((left, right) => right.value - left.value).slice(0, input.limit ?? 20)
+		})
+
+		const logStats = Effect.fn("leto/TelemetryStore.logStats")(function* (input: LogStatsSearch) {
+			const logs = yield* searchLogs({
+				serviceName: input.serviceName,
+				traceId: input.traceId,
+				spanId: input.spanId,
+				body: input.body,
+				attributeFilters: input.attributeFilters,
+				limit: Math.max(5000, input.limit ?? config.otel.logFetchLimit),
+			})
+
+			const groups = new Map<string, number>()
+			for (const log of logs) {
+				const group = input.groupBy === "service"
+					? log.serviceName
+					: input.groupBy === "severity"
+						? log.severityText
+						: input.groupBy === "scope"
+							? log.scopeName ?? "unknown"
+							: input.groupBy.startsWith("attr.")
+								? log.attributes[input.groupBy.slice(5)] ?? "unknown"
+								: "unknown"
+				groups.set(group, (groups.get(group) ?? 0) + 1)
+			}
+
+			return [...groups.entries()]
+				.map(([group, count]) => ({ group, value: count, count }))
+				.sort((left, right) => right.value - left.value)
+				.slice(0, input.limit ?? 20)
 		})
 
 		const listRecentLogs = Effect.fn("leto/TelemetryStore.listRecentLogs")(function* (serviceName: string) {
@@ -644,8 +791,11 @@ export const TelemetryStoreLive = Layer.sync(
 			listServices,
 			listRecentTraces,
 			searchTraces,
+			traceStats,
 			getTrace,
+			getSpan,
 			searchLogs,
+			logStats,
 			listFacets,
 			listRecentLogs,
 			listTraceLogs,

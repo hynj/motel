@@ -1,6 +1,6 @@
 import { TextAttributes } from "@opentui/core"
 import { colors } from "./theme.ts"
-import { fitCell } from "./format.ts"
+import { fitCell, truncateText } from "./format.ts"
 import type { DetailView } from "./state.ts"
 
 export const BlankRow = () => <box height={1} />
@@ -35,7 +35,7 @@ export const TextLine = ({ children, fg = colors.text, bg }: { children: React.R
 
 export const AlignedHeaderLine = ({ left, right, width, rightFg = colors.muted }: { left: string; right: string; width: number; rightFg?: string }) => {
 	const availableRightWidth = Math.max(8, width - left.length - 2)
-	const rightText = right.length > availableRightWidth ? `${right.slice(0, Math.max(0, availableRightWidth - 3))}...` : right
+	const rightText = truncateText(right, availableRightWidth)
 	const gap = Math.max(2, width - left.length - rightText.length)
 
 	return (

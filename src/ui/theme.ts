@@ -10,6 +10,8 @@ export const colors = {
 	passing: "#7dd3a3",
 	defaultService: "#93c5fd",
 	footerBg: "#000000",
+	treeLine: "#524d45",
+	previewKey: "#6a6358",
 } as const
 
 export const waterfallColors = {
