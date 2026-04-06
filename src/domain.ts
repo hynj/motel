@@ -48,6 +48,7 @@ export interface TraceSummaryItem {
 export interface SpanItem {
 	readonly traceId: string
 	readonly rootOperationName: string
+	readonly parentOperationName: string | null
 	readonly span: TraceSpanItem
 }
 

@@ -45,6 +45,9 @@ http://127.0.0.1:27686/api/traces?service=<service>&limit=20&lookback=1h
 http://127.0.0.1:27686/api/traces/search?service=<service>&operation=proxy&status=error&attr.sessionID=<session-id>
 http://127.0.0.1:27686/api/traces/stats?groupBy=operation&agg=p95_duration&service=<service>
 http://127.0.0.1:27686/api/spans/<span-id>
+http://127.0.0.1:27686/api/spans/<span-id>/logs
+http://127.0.0.1:27686/api/spans/search?service=<service>&operation=Format.file&parentOperation=Tool.write&attr.sessionID=<session-id>
+http://127.0.0.1:27686/api/traces/<trace-id>/spans
 http://127.0.0.1:27686/api/logs?service=<service>&body=proxy_request
 http://127.0.0.1:27686/api/logs?service=<service>&attr.service.name=<service>
 http://127.0.0.1:27686/api/logs/stats?groupBy=severity&agg=count&service=<service>
@@ -93,6 +96,8 @@ The easiest flow is:
 
 An agent does not need to talk to the TUI.
 
+List and search endpoints now return a `meta` object with `limit`, `lookback`, `returned`, `truncated`, and `nextCursor` so callers can page safely instead of assuming they received all results.
+
 Use one of these:
 
 1. leto HTTP API directly
@@ -109,13 +114,16 @@ curl http://127.0.0.1:27686/api/traces/<trace-id>
 bun run cli services
 bun run cli traces my-service 20
 bun run cli span <span-id>
-bun run cli search-traces my-service proxy
-bun run cli trace-stats operation p95_duration my-service
+bun run cli trace-spans <trace-id>
+bun run cli search-spans my-service Format.file parent=Tool.write attr.sessionID=sess_123
+bun run cli search-traces my-service proxy attr.sessionID=sess_123
+bun run cli trace-stats operation p95_duration my-service attr.modelID=gpt-5.4
 bun run cli trace <trace-id>
 bun run cli logs my-service
-bun run cli search-logs my-service timeout
-bun run cli log-stats severity my-service
+bun run cli search-logs my-service timeout attr.tool=search
+bun run cli log-stats severity my-service attr.tool=search
 bun run cli trace-logs <trace-id>
+bun run cli span-logs <span-id>
 bun run cli facets logs severity
 bun run instructions
 ```

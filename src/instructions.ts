@@ -38,10 +38,16 @@ Requirements:
     curl "${config.otel.queryUrl}/api/traces/search?service=<service-name>&operation=<text-fragment>&status=error&attr.sessionID=<session-id>"
     curl "${config.otel.queryUrl}/api/traces/stats?groupBy=operation&agg=p95_duration&service=<service-name>"
     curl "${config.otel.queryUrl}/api/spans/<span-id>"
+    curl "${config.otel.queryUrl}/api/spans/<span-id>/logs"
+    curl "${config.otel.queryUrl}/api/spans/search?service=<service-name>&operation=Format.file&parentOperation=Tool.write&attr.sessionID=<session-id>"
+    curl "${config.otel.queryUrl}/api/traces/<trace-id>/spans"
     curl "${config.otel.queryUrl}/api/logs?service=<service-name>"
     curl "${config.otel.queryUrl}/api/logs/search?service=<service-name>&body=<text-fragment>"
     curl "${config.otel.queryUrl}/api/logs/stats?groupBy=severity&agg=count&service=<service-name>"
     curl "${config.otel.queryUrl}/api/facets?type=logs&field=severity"
     curl ${config.otel.queryUrl}/openapi.json
+
+List and search responses include a meta object with nextCursor when more data is available.
+CLI search and stats commands also accept extra attr.<key>=<value> filters.
 
 Use the repo's existing patterns where possible. Avoid adding new observability infrastructure unless the target repo truly needs it.`

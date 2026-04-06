@@ -8,12 +8,15 @@
 - Query services via CLI: `bun run cli services`
 - Query traces via CLI: `bun run cli traces <service> [limit]`
 - Query a span via CLI: `bun run cli span <span-id>`
-- Search traces via CLI: `bun run cli search-traces <service> [operation]`
-- Query trace stats via CLI: `bun run cli trace-stats <groupBy> <agg> [service]`
+- Query spans for one trace: `bun run cli trace-spans <trace-id>`
+- Search spans via CLI: `bun run cli search-spans [service] [operation] [parent=<operation>] [attr.key=value ...]`
+- Search traces via CLI: `bun run cli search-traces <service> [operation] [attr.key=value ...]`
+- Query trace stats via CLI: `bun run cli trace-stats <groupBy> <agg> [service] [attr.key=value ...]`
 - Query logs via CLI: `bun run cli logs <service>`
-- Search logs via CLI: `bun run cli search-logs <service> [body]`
-- Query log stats via CLI: `bun run cli log-stats <groupBy> [service]`
+- Search logs via CLI: `bun run cli search-logs <service> [body] [attr.key=value ...]`
+- Query log stats via CLI: `bun run cli log-stats <groupBy> [service] [attr.key=value ...]`
 - Query logs for one trace: `bun run cli trace-logs <trace-id>`
+- Query logs for one span: `bun run cli span-logs <span-id>`
 - Query facets via CLI: `bun run cli facets <traces|logs> <field>`
 - Print Effect setup instructions: `bun run instructions`
 - Typecheck: `bun run typecheck`
@@ -21,6 +24,11 @@
 ## Verification
 - The built-in verification step is `bun run typecheck`.
 - For runtime verification, start the TUI or server once, then query `http://127.0.0.1:27686/api/services`, `http://127.0.0.1:27686/api/spans/<span-id>`, `http://127.0.0.1:27686/openapi.json`, and `bun run cli logs leto-otel-tui`.
+- For span-centric debugging, use `http://127.0.0.1:27686/api/spans/search?...`, `http://127.0.0.1:27686/api/spans/<span-id>/logs`, and `http://127.0.0.1:27686/api/traces/<trace-id>/spans`.
+
+## API Notes
+- List and search endpoints return a `meta` object with `limit`, `lookback`, `returned`, `truncated`, and `nextCursor`.
+- `/api/traces` and `/api/traces/search` return summaries by default. Use `/api/traces/<trace-id>` for the full trace tree.
 
 ## Architecture
 - `src/index.tsx` creates the OpenTUI renderer and mounts the app.

@@ -1,5 +1,5 @@
 import { Schema } from "effect"
-import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi"
+import { HttpApi, HttpApiEndpoint, HttpApiGroup, HttpApiSchema, OpenApi } from "effect/unstable/httpapi"
 
 const ErrorResponse = Schema.Struct({ error: Schema.String })
 const Meta = Schema.Struct({
@@ -58,6 +58,7 @@ const TraceSummary = Schema.Struct({
 const Span = Schema.Struct({
 	traceId: Schema.String,
 	rootOperationName: Schema.String.pipe(Schema.annotateKey({ description: "Operation name of the trace's root span, for context" })),
+	parentOperationName: Schema.NullOr(Schema.String).pipe(Schema.annotateKey({ description: "Parent span operation name, if present" })),
 	span: TraceSpan,
 }).annotate({ identifier: "SpanWithContext" })
 
@@ -85,8 +86,19 @@ const Stat = Schema.Struct({
 }).annotate({ identifier: "Stat" })
 
 const ServiceList = Schema.Struct({ data: Schema.Array(Schema.String) })
+const Health = Schema.Struct({
+	ok: Schema.Boolean,
+	service: Schema.String,
+	databasePath: Schema.String,
+})
+const IngestTraceResponse = Schema.Struct({ insertedSpans: Schema.Number })
+const IngestLogResponse = Schema.Struct({ insertedLogs: Schema.Number })
+const PlainText = Schema.String.pipe(HttpApiSchema.asText())
+const HtmlText = Schema.String.pipe(HttpApiSchema.asText({ contentType: "text/html" }))
 const TraceSummaryList = Schema.Struct({ data: Schema.Array(TraceSummary), meta: Meta })
 const SpanResponse = Schema.Struct({ data: Span })
+const SpanList = Schema.Struct({ data: Schema.Array(Span) })
+const PaginatedSpanList = Schema.Struct({ data: Schema.Array(Span), meta: Meta })
 const TraceResponse = Schema.Struct({ data: Trace })
 const LogList = Schema.Struct({ data: Schema.Array(Log), meta: Meta })
 const FacetList = Schema.Struct({ data: Schema.Array(Facet) })
@@ -114,6 +126,28 @@ export const LetoHttpApi = HttpApi.make("LetoTelemetry")
 		HttpApiGroup.make("telemetry")
 			.annotate(OpenApi.Description, "Query traces, spans, logs, and service metadata from the local telemetry store")
 			.add(
+				HttpApiEndpoint.get("root", "/", { success: PlainText })
+					.annotate(OpenApi.Summary, "Root endpoint")
+					.annotate(OpenApi.Description, "Human-readable overview of the local telemetry server routes."),
+
+				HttpApiEndpoint.get("health", "/api/health", { success: Health })
+					.annotate(OpenApi.Summary, "Health check")
+					.annotate(OpenApi.Description, "Returns basic health and storage information for the local telemetry server."),
+
+				HttpApiEndpoint.post("ingestTraces", "/v1/traces", {
+					payload: Schema.Unknown,
+					success: IngestTraceResponse,
+				})
+					.annotate(OpenApi.Summary, "Ingest OTLP traces")
+					.annotate(OpenApi.Description, "Accepts OTLP HTTP trace export requests and stores them in the local SQLite telemetry store."),
+
+				HttpApiEndpoint.post("ingestLogs", "/v1/logs", {
+					payload: Schema.Unknown,
+					success: IngestLogResponse,
+				})
+					.annotate(OpenApi.Summary, "Ingest OTLP logs")
+					.annotate(OpenApi.Description, "Accepts OTLP HTTP log export requests and stores them in the local SQLite telemetry store."),
+
 				HttpApiEndpoint.get("services", "/api/services", { success: ServiceList })
 					.annotate(OpenApi.Summary, "List active services")
 					.annotate(OpenApi.Description, "Returns service names that have emitted spans or logs within the default lookback window. Use this to discover what services are reporting, then query their traces or logs."),
@@ -178,14 +212,38 @@ export const LetoHttpApi = HttpApi.make("LetoTelemetry")
 					.annotate(OpenApi.Summary, "Get a single trace")
 					.annotate(OpenApi.Description, "Returns the full trace with all spans ordered by parent-child hierarchy. Returns 404 if the trace ID is not found or has expired."),
 
+				HttpApiEndpoint.get("tracePage", "/trace/:traceId", {
+					params: {
+						traceId: Schema.String.pipe(Schema.annotateKey({ description: "Full 32-character hex trace ID" })),
+					},
+					success: HtmlText,
+					error: ErrorResponse,
+				})
+					.annotate(OpenApi.Summary, "Render a browser trace page")
+					.annotate(OpenApi.Description, "Renders a simple HTML waterfall/log view for one trace, suitable for opening from the TUI or browser."),
+
 				HttpApiEndpoint.get("traceLogs", "/api/traces/:traceId/logs", {
 					params: {
 						traceId: Schema.String.pipe(Schema.annotateKey({ description: "Full 32-character hex trace ID" })),
 					},
+					query: {
+						lookback: LookbackParam,
+						limit: LimitParam,
+						cursor: CursorParam,
+					},
 					success: LogList,
 				})
 					.annotate(OpenApi.Summary, "Get logs for a trace")
-					.annotate(OpenApi.Description, "Returns all log records correlated with the given trace, across all spans. Ordered by timestamp descending."),
+					.annotate(OpenApi.Description, "Returns log records correlated with the given trace, across all spans. Ordered by timestamp descending. Supports cursor pagination and bounded lookback/limit defaults."),
+
+				HttpApiEndpoint.get("traceSpans", "/api/traces/:traceId/spans", {
+					params: {
+						traceId: Schema.String.pipe(Schema.annotateKey({ description: "Full 32-character hex trace ID" })),
+					},
+					success: SpanList,
+				})
+					.annotate(OpenApi.Summary, "List spans for a trace")
+					.annotate(OpenApi.Description, "Returns the flat list of spans for one trace, preserving trace context on each row. Useful for span-level filtering and sorting without traversing the full tree shape."),
 
 				HttpApiEndpoint.get("span", "/api/spans/:spanId", {
 					params: {
@@ -196,6 +254,34 @@ export const LetoHttpApi = HttpApi.make("LetoTelemetry")
 				})
 					.annotate(OpenApi.Summary, "Get a single span")
 					.annotate(OpenApi.Description, "Returns a span by its ID, including the parent trace ID and root operation name for context. Returns 404 if the span is not found."),
+
+				HttpApiEndpoint.get("spanLogs", "/api/spans/:spanId/logs", {
+					params: {
+						spanId: Schema.String.pipe(Schema.annotateKey({ description: "Full 16-character hex span ID" })),
+					},
+					query: {
+						lookback: LookbackParam,
+						limit: LimitParam,
+						cursor: CursorParam,
+					},
+					success: LogList,
+				})
+					.annotate(OpenApi.Summary, "Get logs for a span")
+					.annotate(OpenApi.Description, "Returns log records correlated with the given span. Ordered by timestamp descending. Supports cursor pagination and bounded lookback/limit defaults."),
+
+				HttpApiEndpoint.get("searchSpans", "/api/spans/search", {
+					query: {
+						service: ServiceParam,
+						operation: Schema.optionalKey(Schema.String),
+						parentOperation: Schema.optionalKey(Schema.String),
+						status: Schema.optionalKey(Schema.Literals(["ok", "error"])),
+						lookback: LookbackParam,
+						limit: LimitParam,
+					},
+					success: PaginatedSpanList,
+				})
+					.annotate(OpenApi.Summary, "Search spans directly")
+					.annotate(OpenApi.Description, "Search spans directly instead of root traces. Supports service, operation, parentOperation, status, lookback, limit, and attr.<key> filters in the query string. Useful for debugging child spans like Format.file or Tool.write."),
 
 				HttpApiEndpoint.get("logs", "/api/logs", {
 					query: {
@@ -241,6 +327,7 @@ export const LetoHttpApi = HttpApi.make("LetoTelemetry")
 						traceId: Schema.optionalKey(Schema.String),
 						spanId: Schema.optionalKey(Schema.String),
 						body: Schema.optionalKey(Schema.String),
+						lookback: LookbackParam,
 						limit: LimitParam,
 					},
 					success: StatList,

@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Effect, References } from "effect"
+import { attributeFiltersFromArgs, isAttributeFilterToken } from "./queryFilters.js"
 
 describe("leto telemetry store", () => {
 	const tempDir = mkdtempSync(join(tmpdir(), "leto-test-"))
@@ -165,6 +166,50 @@ describe("leto telemetry store", () => {
 		expect(result?.span.depth).toBe(1)
 	})
 
+	it("filters logs by spanId", async () => {
+		const result = await storeRuntime.runPromise(
+			Effect.flatMap(TelemetryStore.asEffect(), (store) =>
+				store.searchLogs({
+					spanId: "child-1",
+				}),
+			).pipe(Effect.provideService(References.MinimumLogLevel, "None")),
+		)
+
+		expect(result).toHaveLength(1)
+		expect(result[0]?.body).toBe("tool call started")
+	})
+
+	it("searches spans by operation, parent operation, and attr filters", async () => {
+		const result = await storeRuntime.runPromise(
+			Effect.flatMap(TelemetryStore.asEffect(), (store) =>
+				store.searchSpans({
+					serviceName: "test-api",
+					operation: "tool.call",
+					parentOperation: "SessionProcessor.stream",
+					attributeFilters: {
+						tool: "search",
+					},
+				}),
+			).pipe(Effect.provideService(References.MinimumLogLevel, "None")),
+		)
+
+		expect(result).toHaveLength(1)
+		expect(result[0]?.traceId).toBe("trace-1")
+		expect(result[0]?.span.operationName).toBe("tool.call")
+		expect(result[0]?.parentOperationName).toBe("SessionProcessor.stream")
+	})
+
+	it("lists spans for a trace", async () => {
+		const result = await storeRuntime.runPromise(
+			Effect.flatMap(TelemetryStore.asEffect(), (store) => store.listTraceSpans("trace-1")).pipe(
+				Effect.provideService(References.MinimumLogLevel, "None"),
+			),
+		)
+
+		expect(result).toHaveLength(2)
+		expect(result[0]?.traceId).toBe("trace-1")
+	})
+
 	it("documents the span lookup route in OpenAPI", () => {
 		expect(letoOpenApiSpec.paths["/api/spans/{spanId}"]).toBeDefined()
 	})
@@ -207,5 +252,17 @@ describe("leto telemetry store", () => {
 	it("documents the stats routes in OpenAPI", () => {
 		expect(letoOpenApiSpec.paths["/api/traces/stats"]).toBeDefined()
 		expect(letoOpenApiSpec.paths["/api/logs/stats"]).toBeDefined()
+		expect(letoOpenApiSpec.paths["/api/spans/{spanId}/logs"]).toBeDefined()
+		expect(letoOpenApiSpec.paths["/api/spans/search"]).toBeDefined()
+		expect(letoOpenApiSpec.paths["/api/traces/{traceId}/spans"]).toBeDefined()
+	})
+
+	it("parses attr filters consistently for CLI-style args", () => {
+		expect(isAttributeFilterToken("attr.sessionID=sess_123")).toBe(true)
+		expect(isAttributeFilterToken("sessionID=sess_123")).toBe(false)
+		expect(attributeFiltersFromArgs(["attr.sessionID=sess_123", "attr.tool=search"])).toEqual({
+			sessionID: "sess_123",
+			tool: "search",
+		})
 	})
 })

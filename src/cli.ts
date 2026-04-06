@@ -1,6 +1,7 @@
 import { Effect, References } from "effect"
 import { config } from "./config.js"
 import { effectSetupInstructions } from "./instructions.js"
+import { attributeFiltersFromArgs, isAttributeFilterToken } from "./queryFilters.js"
 import { queryRuntime } from "./runtime.js"
 import { LogQueryService } from "./services/LogQueryService.js"
 import { TraceQueryService } from "./services/TraceQueryService.js"
@@ -10,7 +11,8 @@ const [command, ...args] = process.argv.slice(2)
 const runQuiet = <A, E, R extends TraceQueryService | LogQueryService | never>(effect: Effect.Effect<A, E, R>) =>
 	queryRuntime.runPromise(effect.pipe(Effect.provideService(References.MinimumLogLevel, "None")))
 
-switch (command) {
+try {
+	switch (command) {
 	case "services": {
 		const result = await runQuiet(Effect.flatMap(TraceQueryService.asEffect(), (query) => query.listServices))
 		console.log(JSON.stringify(result, null, 2))
@@ -47,14 +49,49 @@ switch (command) {
 		break
 	}
 
+	case "trace-spans": {
+		const traceId = args[0]
+		if (!traceId) {
+			throw new Error("Usage: bun run cli trace-spans <trace-id>")
+		}
+
+		const result = await runQuiet(Effect.flatMap(TraceQueryService.asEffect(), (query) => query.listTraceSpans(traceId)))
+		console.log(JSON.stringify(result, null, 2))
+		break
+	}
+
+	case "search-spans": {
+		const service = args[0] ?? config.otel.serviceName
+		const operation = args[1] && !isAttributeFilterToken(args[1]) && !args[1].startsWith("parent=") ? args[1] : undefined
+		const parentTokenIndex = args.findIndex((value, index) => index > 0 && value.startsWith("parent="))
+		const parentOperation = parentTokenIndex >= 0 ? args[parentTokenIndex]?.slice("parent=".length) : undefined
+		const attributeStartIndex = operation ? 2 : 1
+		const attributeFilters = attributeFiltersFromArgs(args.slice(attributeStartIndex))
+		const result = await runQuiet(
+			Effect.flatMap(TraceQueryService.asEffect(), (query) =>
+				query.searchSpans({
+					serviceName: service,
+					operation,
+					parentOperation,
+					attributeFilters,
+					limit: config.otel.logFetchLimit,
+				}),
+			),
+		)
+		console.log(JSON.stringify(result, null, 2))
+		break
+	}
+
 	case "search-traces": {
 		const service = args[0] ?? config.otel.serviceName
-		const operation = args[1] ?? undefined
+		const operation = args[1] && !isAttributeFilterToken(args[1]) ? args[1] : undefined
+		const attributeFilters = attributeFiltersFromArgs(args.slice(operation ? 2 : 1))
 		const result = await runQuiet(
 			Effect.flatMap(TraceQueryService.asEffect(), (query) =>
 				query.searchTraces({
 					serviceName: service,
 					operation,
+					attributeFilters,
 					limit: config.otel.traceFetchLimit,
 				}),
 			),
@@ -66,7 +103,8 @@ switch (command) {
 	case "trace-stats": {
 		const groupBy = args[0]
 		const agg = args[1]
-		const service = args[2] ?? undefined
+		const service = args[2] && !isAttributeFilterToken(args[2]) ? args[2] : undefined
+		const attributeFilters = attributeFiltersFromArgs(args.slice(service ? 3 : 2))
 		if (!groupBy || (agg !== "count" && agg !== "avg_duration" && agg !== "p95_duration" && agg !== "error_rate")) {
 			throw new Error("Usage: bun run cli trace-stats <groupBy> <count|avg_duration|p95_duration|error_rate> [service]")
 		}
@@ -77,6 +115,7 @@ switch (command) {
 					groupBy,
 					agg,
 					serviceName: service,
+					attributeFilters,
 					limit: 20,
 				}),
 			),
@@ -99,12 +138,14 @@ switch (command) {
 
 	case "search-logs": {
 		const service = args[0] ?? config.otel.serviceName
-		const body = args[1] ?? undefined
+		const body = args[1] && !isAttributeFilterToken(args[1]) ? args[1] : undefined
+		const attributeFilters = attributeFiltersFromArgs(args.slice(body ? 2 : 1))
 		const result = await runQuiet(
 			Effect.flatMap(LogQueryService.asEffect(), (query) =>
 				query.searchLogs({
 					serviceName: service,
 					body,
+					attributeFilters,
 					limit: config.otel.logFetchLimit,
 				}),
 			),
@@ -115,7 +156,8 @@ switch (command) {
 
 	case "log-stats": {
 		const groupBy = args[0]
-		const service = args[1] ?? undefined
+		const service = args[1] && !isAttributeFilterToken(args[1]) ? args[1] : undefined
+		const attributeFilters = attributeFiltersFromArgs(args.slice(service ? 2 : 1))
 		if (!groupBy) {
 			throw new Error("Usage: bun run cli log-stats <groupBy> [service]")
 		}
@@ -126,6 +168,7 @@ switch (command) {
 					groupBy,
 					agg: "count",
 					serviceName: service,
+					attributeFilters,
 					limit: 20,
 				}),
 			),
@@ -141,6 +184,24 @@ switch (command) {
 		}
 
 		const result = await runQuiet(Effect.flatMap(LogQueryService.asEffect(), (query) => query.listTraceLogs(traceId)))
+		console.log(JSON.stringify(result, null, 2))
+		break
+	}
+
+	case "span-logs": {
+		const spanId = args[0]
+		if (!spanId) {
+			throw new Error("Usage: bun run cli span-logs <span-id>")
+		}
+
+		const result = await runQuiet(
+			Effect.flatMap(LogQueryService.asEffect(), (query) =>
+				query.searchLogs({
+					spanId,
+					limit: config.otel.logFetchLimit,
+				}),
+			),
+		)
 		console.log(JSON.stringify(result, null, 2))
 		break
 	}
@@ -178,14 +239,20 @@ switch (command) {
 	bun run cli traces [service] [limit]
 	bun run cli trace <trace-id>
 	bun run cli span <span-id>
-	bun run cli search-traces [service] [operation]
-	bun run cli trace-stats <groupBy> <agg> [service]
+	bun run cli trace-spans <trace-id>
+	bun run cli search-spans [service] [operation] [parent=<operation>] [attr.key=value ...]
+	bun run cli search-traces [service] [operation] [attr.key=value ...]
+	bun run cli trace-stats <groupBy> <agg> [service] [attr.key=value ...]
 	bun run cli logs [service]
-	bun run cli search-logs [service] [body]
-	bun run cli log-stats <groupBy> [service]
+	bun run cli search-logs [service] [body] [attr.key=value ...]
+	bun run cli log-stats <groupBy> [service] [attr.key=value ...]
 	bun run cli trace-logs <trace-id>
+	bun run cli span-logs <span-id>
 	bun run cli facets <traces|logs> <field>
 	bun run cli instructions
 	bun run cli endpoints`)
+		}
 	}
+} finally {
+	await queryRuntime.dispose()
 }

@@ -12,7 +12,10 @@
     "services": "bun run src/cli.ts services",
     "logs": "bun run src/cli.ts logs",
     "trace-logs": "bun run src/cli.ts trace-logs",
+    "span-logs": "bun run src/cli.ts span-logs",
     "span": "bun run src/cli.ts span",
+    "trace-spans": "bun run src/cli.ts trace-spans",
+    "search-spans": "bun run src/cli.ts search-spans",
     "trace-stats": "bun run src/cli.ts trace-stats",
     "log-stats": "bun run src/cli.ts log-stats",
     "typecheck": "tsc --noEmit"
