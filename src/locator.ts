@@ -1,5 +1,5 @@
 import { Effect, Layer, Ref, ServiceMap } from "effect"
-import { listAliveEntries, type RegistryEntry } from "./registry.js"
+import { listAliveEntries, MOTEL_SERVICE_ID, type RegistryEntry } from "./registry.js"
 
 export class LocatorError extends Error {
 	readonly _tag = "LocatorError"
@@ -39,8 +39,8 @@ const handshake = (url: string): Effect.Effect<HealthShape, LocatorError> =>
 			})
 			if (!res.ok) throw new Error(`HTTP ${res.status}`)
 			const body = (await res.json()) as HealthShape
-			if (body.service !== "motel-local-server") {
-				throw new Error(`service=${body.service} (expected motel-local-server)`)
+			if (body.service !== MOTEL_SERVICE_ID) {
+				throw new Error(`service=${body.service} (expected ${MOTEL_SERVICE_ID})`)
 			}
 			return body
 		},

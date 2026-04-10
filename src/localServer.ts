@@ -6,7 +6,7 @@ import * as HttpServer from "effect/unstable/http/HttpServer"
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse"
 import { MotelHttpApi } from "./httpApi.js"
 import { attributeFiltersFromEntries, ATTRIBUTE_FILTER_PREFIX } from "./queryFilters.js"
-import { MOTEL_VERSION, writeRegistryEntry } from "./registry.js"
+import { MOTEL_SERVICE_ID, MOTEL_VERSION, writeRegistryEntry } from "./registry.js"
 import { TelemetryStore, TelemetryStoreLive } from "./services/TelemetryStore.js"
 import type { LogItem, TraceItem, TraceSummaryItem } from "./domain.js"
 
@@ -258,7 +258,7 @@ const TelemetryGroupLive = HttpApiBuilder.group(
 			.handle("health", () =>
 				Effect.succeed({
 					ok: true,
-					service: "motel-local-server",
+					service: MOTEL_SERVICE_ID,
 					databasePath: config.otel.databasePath,
 					pid: process.pid,
 					url: resolveBoundUrl(),

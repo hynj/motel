@@ -3,6 +3,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 
 export const MOTEL_VERSION = "0.1.0"
+export const MOTEL_SERVICE_ID = "motel-local-server"
 
 const stateHome = () =>
 	process.env.XDG_STATE_HOME?.trim() || path.join(os.homedir(), ".local", "state")
