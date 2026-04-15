@@ -98,6 +98,13 @@ const Health = Schema.Struct({
 })
 const IngestTraceResponse = Schema.Struct({ insertedSpans: Schema.Number })
 const IngestLogResponse = Schema.Struct({ insertedLogs: Schema.Number })
+const DocIndex = Schema.Struct({
+	docs: Schema.Array(Schema.Struct({
+		name: Schema.String.pipe(Schema.annotateKey({ description: "Document identifier used in the URL path" })),
+		title: Schema.String.pipe(Schema.annotateKey({ description: "Human-readable title" })),
+		path: Schema.String.pipe(Schema.annotateKey({ description: "API path to fetch this document" })),
+	})),
+}).annotate({ identifier: "DocIndex" })
 const PlainText = Schema.String.pipe(HttpApiSchema.asText())
 const HtmlText = Schema.String.pipe(HttpApiSchema.asText({ contentType: "text/html" }))
 const TraceSummaryList = Schema.Struct({ data: Schema.Array(TraceSummary), meta: Meta })
@@ -291,6 +298,9 @@ export const MotelHttpApi = HttpApi.make("MotelTelemetry")
 				HttpApiEndpoint.get("logs", "/api/logs", {
 					query: {
 						service: ServiceParam,
+						severity: Schema.optionalKey(Schema.String).pipe(
+							Schema.annotateKey({ description: "Filter by log severity: TRACE, DEBUG, INFO, WARN, ERROR, FATAL (case-insensitive)" }),
+						),
 						traceId: Schema.optionalKey(Schema.String).pipe(
 							Schema.annotateKey({ description: "Filter logs by trace ID" }),
 						),
@@ -298,7 +308,7 @@ export const MotelHttpApi = HttpApi.make("MotelTelemetry")
 							Schema.annotateKey({ description: "Filter logs by span ID" }),
 						),
 						body: Schema.optionalKey(Schema.String).pipe(
-							Schema.annotateKey({ description: "Substring match against log body (case-sensitive)" }),
+							Schema.annotateKey({ description: "Substring match against log body (case-insensitive)" }),
 						),
 						lookback: LookbackParam,
 						limit: LimitParam,
@@ -307,11 +317,14 @@ export const MotelHttpApi = HttpApi.make("MotelTelemetry")
 					success: LogList,
 				})
 					.annotate(OpenApi.Summary, "Search logs")
-					.annotate(OpenApi.Description, "Search log records by service, trace/span correlation, or body text. Supports attribute filtering via query parameters prefixed with 'attr.' (e.g. ?attr.user.id=123), cursor pagination, and bounded lookback/limit defaults. Ordered by timestamp descending."),
+					.annotate(OpenApi.Description, "Search log records by service, severity, trace/span correlation, or body text. Supports attribute filtering via query parameters prefixed with 'attr.' (e.g. ?attr.user.id=123), cursor pagination, and bounded lookback/limit defaults. Ordered by timestamp descending."),
 
 				HttpApiEndpoint.get("searchLogs", "/api/logs/search", {
 					query: {
 						service: ServiceParam,
+						severity: Schema.optionalKey(Schema.String).pipe(
+							Schema.annotateKey({ description: "Filter by log severity: TRACE, DEBUG, INFO, WARN, ERROR, FATAL (case-insensitive)" }),
+						),
 						traceId: Schema.optionalKey(Schema.String),
 						spanId: Schema.optionalKey(Schema.String),
 						body: Schema.optionalKey(Schema.String),
@@ -340,6 +353,20 @@ export const MotelHttpApi = HttpApi.make("MotelTelemetry")
 				})
 					.annotate(OpenApi.Summary, "Aggregate log statistics")
 					.annotate(OpenApi.Description, "Returns grouped log counts by fields like severity, service, scope, or attr.<key>. Useful for quickly understanding log distribution before drilling into raw entries."),
+
+				HttpApiEndpoint.get("docs", "/api/docs", { success: DocIndex })
+					.annotate(OpenApi.Summary, "List available documentation")
+					.annotate(OpenApi.Description, "Returns an index of available documentation pages. Use GET /api/docs/{name} to fetch the full content of a specific document."),
+
+				HttpApiEndpoint.get("doc", "/api/docs/:name", {
+					params: {
+						name: Schema.String.pipe(Schema.annotateKey({ description: "Document name: 'debug' for the debug workflow skill, 'effect' for Effect-specific instrumentation guidance" })),
+					},
+					success: PlainText,
+					error: ErrorResponse,
+				})
+					.annotate(OpenApi.Summary, "Get a documentation page")
+					.annotate(OpenApi.Description, "Returns the full markdown content of a documentation page. Available documents: 'debug' (hypothesis-driven debugging workflow using motel), 'effect' (Effect-specific instrumentation and runtime guidance)."),
 
 				HttpApiEndpoint.get("facets", "/api/facets", {
 					query: {

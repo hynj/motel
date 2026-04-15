@@ -2,7 +2,7 @@ import { useAtom } from "@effect/atom-react"
 import { useKeyboard } from "@opentui/react"
 import { useEffect, useRef } from "react"
 import type { TraceItem } from "../domain.ts"
-import { effectSetupInstructions } from "../instructions.ts"
+import { otelServerInstructions } from "../instructions.ts"
 import { copyToClipboard, traceUiUrl } from "./format.ts"
 import {
 	autoRefreshAtom,
@@ -431,9 +431,9 @@ export const useKeyboardNav = (params: KeyboardNavParams) => {
 			return
 		}
 		if (key.name === "c" || key.name === "C") {
-			void copyToClipboard(effectSetupInstructions())
+			void copyToClipboard(otelServerInstructions())
 				.then(() => {
-					s.flashNotice("Copied Effect setup instructions")
+					s.flashNotice("Copied OTEL server details")
 				})
 				.catch((error) => {
 					s.flashNotice(error instanceof Error ? error.message : String(error))

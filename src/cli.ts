@@ -1,6 +1,6 @@
 import { Effect, References } from "effect"
 import { config } from "./config.js"
-import { effectSetupInstructions } from "./instructions.js"
+import { otelServerInstructions } from "./instructions.js"
 import { attributeFiltersFromArgs, isAttributeFilterToken } from "./queryFilters.js"
 import { queryRuntime } from "./runtime.js"
 import { LogQueryService } from "./services/LogQueryService.js"
@@ -125,7 +125,7 @@ try {
 	}
 
 	case "instructions": {
-		console.log(effectSetupInstructions())
+		console.log(otelServerInstructions())
 		break
 	}
 

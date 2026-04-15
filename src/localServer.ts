@@ -1,3 +1,5 @@
+import { promises as fs } from "node:fs"
+import path from "node:path"
 import { Effect, Layer, ServiceMap } from "effect"
 import { config, parsePositiveInt, resolveOtelUrl } from "./config.js"
 import { HttpApiBuilder, HttpApiScalar } from "effect/unstable/httpapi"
@@ -14,6 +16,8 @@ const TRACE_DEFAULT_LIMIT = 20
 const TRACE_MAX_LIMIT = 100
 const TRACE_DEFAULT_LOOKBACK = 60
 const TRACE_MAX_LOOKBACK = 24 * 60
+const SPAN_DEFAULT_LIMIT = 100
+const SPAN_MAX_LIMIT = 500
 const LOG_DEFAULT_LIMIT = 100
 const LOG_MAX_LIMIT = 500
 const LOG_DEFAULT_LOOKBACK = 60
@@ -90,24 +94,13 @@ const formatLookback = (minutes: number) => {
 	return `${minutes}m`
 }
 
-const traceSummary = (trace: TraceItem): TraceSummaryItem => ({
-	traceId: trace.traceId,
-	serviceName: trace.serviceName,
-	rootOperationName: trace.rootOperationName,
-	startedAt: trace.startedAt,
-	durationMs: trace.durationMs,
-	spanCount: trace.spanCount,
-	errorCount: trace.errorCount,
-	warnings: trace.warnings,
-})
-
-const applyTraceCursor = (traces: readonly TraceItem[], cursor: CursorShape | null) => {
-	if (!cursor || cursor.kind !== "trace") return traces
-	return traces.filter((trace) => {
-		const startedAt = trace.startedAt.getTime()
+const applySummaryCursor = (summaries: readonly TraceSummaryItem[], cursor: CursorShape | null) => {
+	if (!cursor || cursor.kind !== "trace") return summaries
+	return summaries.filter((summary) => {
+		const startedAt = summary.startedAt.getTime()
 		if (startedAt < cursor.startedAt) return true
 		if (startedAt > cursor.startedAt) return false
-		return trace.traceId < cursor.id
+		return summary.traceId < cursor.id
 	})
 }
 
@@ -129,12 +122,12 @@ const listMeta = (input: { readonly limit: number; readonly lookbackMinutes: num
 	nextCursor: input.nextCursor,
 })
 
-const paginateTraces = (traces: readonly TraceItem[], options: { readonly limit: number; readonly lookbackMinutes: number; readonly cursor: CursorShape | null }) => {
-	const scoped = applyTraceCursor(traces, options.cursor)
+const paginateSummaries = (summaries: readonly TraceSummaryItem[], options: { readonly limit: number; readonly lookbackMinutes: number; readonly cursor: CursorShape | null }) => {
+	const scoped = applySummaryCursor(summaries, options.cursor)
 	const page = scoped.slice(0, options.limit)
 	const last = page.at(-1)
 	return {
-		data: page.map(traceSummary),
+		data: page,
 		meta: listMeta({
 			limit: options.limit,
 			lookbackMinutes: options.lookbackMinutes,
@@ -164,6 +157,7 @@ const paginateLogs = (logs: readonly LogItem[], options: { readonly limit: numbe
 
 const loadLogsPage = (input: {
 	readonly serviceName?: string | null
+	readonly severity?: string | null
 	readonly traceId?: string | null
 	readonly spanId?: string | null
 	readonly body?: string | null
@@ -176,10 +170,12 @@ const loadLogsPage = (input: {
 		Effect.map(
 			store.searchLogs({
 				serviceName: input.serviceName,
+				severity: input.severity,
 				traceId: input.traceId,
 				spanId: input.spanId,
 				body: input.body,
-				limit: LOG_MAX_LIMIT + 1,
+				lookbackMinutes: input.lookbackMinutes,
+				limit: input.limit + 1,
 				attributeFilters: input.attributeFilters,
 			}),
 			(logs) => paginateLogs(logs, {
@@ -199,6 +195,7 @@ const handleLogSearch = (request: { readonly url: string }) =>
 		const cursor = decodeCursor(url.searchParams.get("cursor"))
 		return jsonResponse(yield* loadLogsPage({
 			serviceName: url.searchParams.get("service"),
+			severity: url.searchParams.get("severity"),
 			traceId: url.searchParams.get("traceId"),
 			spanId: url.searchParams.get("spanId"),
 			body: url.searchParams.get("body"),
@@ -288,7 +285,7 @@ const TelemetryGroupLive = HttpApiBuilder.group(
 	(handlers) =>
 		handlers
 			.handleRaw("root", () =>
-				Effect.succeed(textResponse("motel local telemetry server\n\nPOST /v1/traces\nPOST /v1/logs\nGET /api/services\nGET /api/traces\nGET /api/traces/search\nGET /api/traces/stats\nGET /api/traces/<trace-id>\nGET /api/traces/<trace-id>/spans\nGET /api/traces/<trace-id>/logs\nGET /api/spans/search\nGET /api/spans/<span-id>\nGET /api/spans/<span-id>/logs\nGET /api/logs\nGET /api/logs/search\nGET /api/logs/stats\nGET /api/facets?type=logs&field=severity\nGET /openapi.json\nGET /docs\nGET /trace/<trace-id>\n")),
+				Effect.succeed(textResponse("motel local telemetry server\n\nPOST /v1/traces\nPOST /v1/logs\nGET /api/services\nGET /api/traces\nGET /api/traces/search\nGET /api/traces/stats\nGET /api/traces/<trace-id>\nGET /api/traces/<trace-id>/spans\nGET /api/traces/<trace-id>/logs\nGET /api/spans/search\nGET /api/spans/<span-id>\nGET /api/spans/<span-id>/logs\nGET /api/logs\nGET /api/logs/search\nGET /api/logs/stats\nGET /api/facets?type=logs&field=severity\nGET /api/docs\nGET /api/docs/<name>\nGET /openapi.json\nGET /docs\nGET /trace/<trace-id>\n")),
 			)
 			.handle("health", () =>
 				Effect.succeed({
@@ -324,8 +321,8 @@ const TelemetryGroupLive = HttpApiBuilder.group(
 					const limit = parseBoundedLimit(url.searchParams.get("limit"), TRACE_DEFAULT_LIMIT, TRACE_MAX_LIMIT)
 					const lookbackMinutes = parseBoundedLookbackMinutes(url.searchParams.get("lookback"), TRACE_DEFAULT_LOOKBACK, TRACE_MAX_LOOKBACK)
 					const cursor = decodeCursor(url.searchParams.get("cursor"))
-					const data = yield* withStore((store) => store.listRecentTraces(service, { limit: TRACE_MAX_LIMIT + 1, lookbackMinutes }))
-					return jsonResponse(paginateTraces(data, { limit, lookbackMinutes, cursor }))
+					const data = yield* withStore((store) => store.listTraceSummaries(service, { limit: limit + 1, lookbackMinutes }))
+					return jsonResponse(paginateSummaries(data, { limit, lookbackMinutes, cursor }))
 				})),
 			)
 			.handleRaw("searchTraces", ({ request }) =>
@@ -336,17 +333,17 @@ const TelemetryGroupLive = HttpApiBuilder.group(
 					const lookbackMinutes = parseBoundedLookbackMinutes(url.searchParams.get("lookback"), TRACE_DEFAULT_LOOKBACK, TRACE_MAX_LOOKBACK)
 					const cursor = decodeCursor(url.searchParams.get("cursor"))
 					const data = yield* withStore((store) =>
-						store.searchTraces({
+						store.searchTraceSummaries({
 							serviceName: url.searchParams.get("service"),
 							operation: url.searchParams.get("operation"),
 							status: (url.searchParams.get("status") as "ok" | "error" | null) ?? null,
 							minDurationMs: url.searchParams.get("minDurationMs") ? Number.parseFloat(url.searchParams.get("minDurationMs") ?? "") : null,
 							attributeFilters,
-							limit: TRACE_MAX_LIMIT + 1,
+							limit: limit + 1,
 							lookbackMinutes,
 						}),
 					)
-					return jsonResponse(paginateTraces(data, { limit, lookbackMinutes, cursor }))
+					return jsonResponse(paginateSummaries(data, { limit, lookbackMinutes, cursor }))
 				})),
 			)
 			.handleRaw("traceStats", ({ request }) =>
@@ -379,7 +376,7 @@ const TelemetryGroupLive = HttpApiBuilder.group(
 				respondRaw(Effect.gen(function*() {
 					const url = requestUrl(request)
 					const attributeFilters = attributeFiltersFromQuery(url)
-					const limit = parseBoundedLimit(url.searchParams.get("limit"), LOG_DEFAULT_LIMIT, LOG_MAX_LIMIT)
+					const limit = parseBoundedLimit(url.searchParams.get("limit"), SPAN_DEFAULT_LIMIT, SPAN_MAX_LIMIT)
 					const lookbackMinutes = parseBoundedLookbackMinutes(url.searchParams.get("lookback"), TRACE_DEFAULT_LOOKBACK, TRACE_MAX_LOOKBACK)
 					const data = yield* withStore((store) =>
 						store.searchSpans({
@@ -467,6 +464,30 @@ const TelemetryGroupLive = HttpApiBuilder.group(
 						}),
 					)
 					return jsonResponse({ data })
+				})),
+			)
+			.handle("docs", () =>
+				Effect.succeed({
+					docs: [
+						{ name: "debug", title: "Motel Debug Workflow", path: "/api/docs/debug" },
+						{ name: "effect", title: "Effect Instrumentation Guide", path: "/api/docs/effect" },
+					],
+				}),
+			)
+			.handleRaw("doc", ({ params }) =>
+				respondRaw(Effect.gen(function*() {
+					const docFiles: Record<string, string> = {
+						debug: path.resolve(import.meta.dir, "../skills/motel-debug/SKILL.md"),
+						effect: path.resolve(import.meta.dir, "../skills/motel-debug/references/effect.md"),
+					}
+					const filePath = docFiles[params.name]
+					if (!filePath) return notFoundResponse(`Unknown doc: ${params.name}. Available: ${Object.keys(docFiles).join(", ")}`)
+					try {
+						const content = yield* Effect.promise(() => fs.readFile(filePath, "utf8"))
+						return textResponse(content)
+					} catch {
+						return notFoundResponse(`Doc file not found: ${params.name}`)
+					}
 				})),
 			)
 			.handleRaw("facets", ({ request }) =>

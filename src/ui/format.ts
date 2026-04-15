@@ -109,6 +109,6 @@ export const copyToClipboard = async (value: string) => {
 	const exitCode = await proc.exited
 	if (exitCode !== 0) {
 		const stderr = await new Response(proc.stderr).text()
-		throw new Error(stderr.trim() || "Could not copy setup instructions")
+		throw new Error(stderr.trim() || "Could not copy OTEL server details")
 	}
 }

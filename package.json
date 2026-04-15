@@ -4,9 +4,11 @@
   "type": "module",
   "private": true,
   "bin": {
+    "motel": "src/motel.ts",
     "motel-mcp": "src/mcp.ts"
   },
   "scripts": {
+    "clear-motel-debug": "bun run skills/motel-debug/scripts/clear-motel-debug.ts",
     "dev": "bun run src/index.tsx",
     "start": "bun run src/index.tsx",
     "server": "bun run src/server.ts",

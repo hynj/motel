@@ -3,7 +3,7 @@ import { mkdirSync } from "node:fs"
 import { dirname } from "node:path"
 import { Clock, Effect, Layer, Schedule, ServiceMap } from "effect"
 import { config } from "../config.js"
-import type { LogItem, SpanItem, TraceItem, TraceSpanEvent, TraceSpanItem } from "../domain.js"
+import type { LogItem, SpanItem, TraceItem, TraceSummaryItem, TraceSpanEvent, TraceSpanItem } from "../domain.js"
 import { attributeMap, nanosToMilliseconds, parseAnyValue, spanKindLabel, spanStatusLabel, stringifyValue, type OtlpLogExportRequest, type OtlpTraceExportRequest } from "../otlp.js"
 
 interface SpanRow {
@@ -38,6 +38,7 @@ interface LogRow {
 
 interface LogSearch {
 	readonly serviceName?: string | null
+	readonly severity?: string | null
 	readonly traceId?: string | null
 	readonly spanId?: string | null
 	readonly body?: string | null
@@ -97,6 +98,39 @@ interface FacetSearch {
 	readonly lookbackMinutes?: number
 	readonly limit?: number
 }
+
+interface TraceSummaryRow {
+	readonly trace_id: string
+	readonly service_name: string
+	readonly root_operation_name: string
+	readonly started_at_ms: number
+	readonly duration_ms: number
+	readonly span_count: number
+	readonly error_count: number
+}
+
+const parseSummaryRow = (row: TraceSummaryRow): TraceSummaryItem => ({
+	traceId: row.trace_id,
+	serviceName: row.service_name ?? "unknown",
+	rootOperationName: row.root_operation_name ?? "unknown",
+	startedAt: new Date(row.started_at_ms),
+	durationMs: Math.max(0, row.duration_ms),
+	spanCount: row.span_count,
+	errorCount: row.error_count,
+	warnings: [],
+})
+
+const TRACE_SUMMARY_SQL = `
+	SELECT
+		trace_id,
+		COALESCE(MIN(CASE WHEN parent_span_id IS NULL THEN service_name END), MIN(service_name)) AS service_name,
+		COALESCE(MIN(CASE WHEN parent_span_id IS NULL THEN operation_name END), MIN(operation_name)) AS root_operation_name,
+		MIN(start_time_ms) AS started_at_ms,
+		MAX(end_time_ms) - MIN(start_time_ms) AS duration_ms,
+		COUNT(*) AS span_count,
+		SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS error_count
+	FROM spans
+`
 
 const parseRecord = (value: string): Record<string, string> => {
 	try {
@@ -236,7 +270,9 @@ export class TelemetryStore extends ServiceMap.Service<
 		readonly ingestLogs: (payload: OtlpLogExportRequest) => Effect.Effect<{ readonly insertedLogs: number }, Error>
 		readonly listServices: Effect.Effect<readonly string[], Error>
 		readonly listRecentTraces: (serviceName: string | null, options?: { readonly lookbackMinutes?: number; readonly limit?: number }) => Effect.Effect<readonly TraceItem[], Error>
+		readonly listTraceSummaries: (serviceName: string | null, options?: { readonly lookbackMinutes?: number; readonly limit?: number }) => Effect.Effect<readonly TraceSummaryItem[], Error>
 		readonly searchTraces: (input: TraceSearch) => Effect.Effect<readonly TraceItem[], Error>
+		readonly searchTraceSummaries: (input: TraceSearch) => Effect.Effect<readonly TraceSummaryItem[], Error>
 		readonly traceStats: (input: TraceStatsSearch) => Effect.Effect<readonly StatsItem[], Error>
 		readonly getTrace: (traceId: string) => Effect.Effect<TraceItem | null, Error>
 		readonly getSpan: (spanId: string) => Effect.Effect<SpanItem | null, Error>
@@ -285,6 +321,7 @@ export const TelemetryStoreLive = Layer.effect(
 
 			CREATE INDEX IF NOT EXISTS idx_spans_service_time ON spans(service_name, start_time_ms DESC);
 			CREATE INDEX IF NOT EXISTS idx_spans_trace_time ON spans(trace_id, start_time_ms ASC);
+			CREATE INDEX IF NOT EXISTS idx_spans_span_id ON spans(span_id);
 
 			CREATE TABLE IF NOT EXISTS logs (
 				id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -508,6 +545,150 @@ export const TelemetryStoreLive = Layer.effect(
 			})
 		})
 
+		const listTraceSummaries = Effect.fn("motel/TelemetryStore.listTraceSummaries")(function* (serviceName: string | null, options?: { readonly lookbackMinutes?: number; readonly limit?: number }) {
+			const cutoff = (yield* Clock.currentTimeMillis) - (options?.lookbackMinutes ?? config.otel.traceLookbackMinutes) * 60 * 1000
+			const limit = options?.limit ?? config.otel.traceFetchLimit
+
+			return yield* Effect.sync(() => {
+				if (serviceName) {
+					return db.query(`
+						${TRACE_SUMMARY_SQL}
+						WHERE service_name = ? AND start_time_ms >= ?
+						GROUP BY trace_id
+						ORDER BY started_at_ms DESC
+						LIMIT ?
+					`).all(serviceName, cutoff, limit) as TraceSummaryRow[]
+				}
+				return db.query(`
+					${TRACE_SUMMARY_SQL}
+					WHERE start_time_ms >= ?
+					GROUP BY trace_id
+					ORDER BY started_at_ms DESC
+					LIMIT ?
+				`).all(cutoff, limit) as TraceSummaryRow[]
+			}).pipe(Effect.map((rows) => rows.map(parseSummaryRow)))
+		})
+
+		const searchTraceSummaries = Effect.fn("motel/TelemetryStore.searchTraceSummaries")(function* (input: TraceSearch) {
+			const cutoff = (yield* Clock.currentTimeMillis) - (input.lookbackMinutes ?? config.otel.traceLookbackMinutes) * 60 * 1000
+			const limit = input.limit ?? config.otel.traceFetchLimit
+
+			const hasAttrFilters = Object.keys(input.attributeFilters ?? {}).length > 0
+			const hasOperationFilter = !!input.operation
+
+			// If we only have SQL-pushable filters, do it all in one query
+			if (!hasAttrFilters && !hasOperationFilter) {
+				return yield* Effect.sync(() => {
+					const clauses: string[] = ["start_time_ms >= ?"]
+					const params: Array<string | number> = [cutoff]
+
+					if (input.serviceName) {
+						clauses.push("service_name = ?")
+						params.push(input.serviceName)
+					}
+
+					const havingClauses: string[] = []
+					if (input.status === "error") havingClauses.push("error_count > 0")
+					if (input.status === "ok") havingClauses.push("error_count = 0")
+					if (input.minDurationMs != null) havingClauses.push(`duration_ms >= ${Number(input.minDurationMs)}`)
+
+					const having = havingClauses.length > 0 ? `HAVING ${havingClauses.join(" AND ")}` : ""
+
+					return db.query(`
+						${TRACE_SUMMARY_SQL}
+						WHERE ${clauses.join(" AND ")}
+						GROUP BY trace_id
+						${having}
+						ORDER BY started_at_ms DESC
+						LIMIT ?
+					`).all(...params, limit) as TraceSummaryRow[]
+				}).pipe(Effect.map((rows) => rows.map(parseSummaryRow)))
+			}
+
+			// Fall back to the full-load path for attribute/operation filters
+			// but only parse what we need for summaries
+			const candidateLimit = hasAttrFilters ? Math.max(limit * 20, 500) : Math.max(limit * 10, 200)
+
+			return yield* Effect.sync(() => {
+				const traceIdRows = input.serviceName
+					? (db.query(`
+						SELECT trace_id, MIN(start_time_ms) AS trace_start
+						FROM spans
+						WHERE service_name = ? AND start_time_ms >= ?
+						GROUP BY trace_id
+						ORDER BY trace_start DESC
+						LIMIT ?
+					`).all(input.serviceName, cutoff, candidateLimit) as Array<{ trace_id: string }>)
+					: (db.query(`
+						SELECT trace_id, MIN(start_time_ms) AS trace_start
+						FROM spans
+						WHERE start_time_ms >= ?
+						GROUP BY trace_id
+						ORDER BY trace_start DESC
+						LIMIT ?
+					`).all(cutoff, candidateLimit) as Array<{ trace_id: string }>)
+
+				const traceIds = traceIdRows.map((row) => row.trace_id)
+				if (traceIds.length === 0) return [] as readonly TraceSummaryItem[]
+
+				const placeholders = traceIds.map(() => "?").join(", ")
+
+				// For operation filter, check if any span in the trace matches
+				const matchingTraceIds = input.operation
+					? new Set(
+						(db.query(`
+							SELECT DISTINCT trace_id FROM spans
+							WHERE trace_id IN (${placeholders}) AND operation_name LIKE ?
+						`).all(...traceIds, `%${input.operation}%`) as Array<{ trace_id: string }>).map((r) => r.trace_id),
+					)
+					: null
+
+				// For attribute filters, we need to check parsed JSON
+				let attrMatchingTraceIds: Set<string> | null = null
+				if (hasAttrFilters) {
+					const rows = db.query(`
+						SELECT trace_id, attributes_json, resource_json FROM spans
+						WHERE trace_id IN (${placeholders})
+					`).all(...traceIds) as Array<{ trace_id: string; attributes_json: string; resource_json: string }>
+
+					attrMatchingTraceIds = new Set<string>()
+					for (const row of rows) {
+						if (attrMatchingTraceIds.has(row.trace_id)) continue
+						const tags = { ...parseRecord(row.resource_json), ...parseRecord(row.attributes_json) }
+						if (matchesAttributes(tags, input.attributeFilters)) {
+							attrMatchingTraceIds.add(row.trace_id)
+						}
+					}
+				}
+
+				const filteredTraceIds = traceIds.filter((id) => {
+					if (matchingTraceIds && !matchingTraceIds.has(id)) return false
+					if (attrMatchingTraceIds && !attrMatchingTraceIds.has(id)) return false
+					return true
+				})
+
+				if (filteredTraceIds.length === 0) return [] as readonly TraceSummaryItem[]
+
+				const filteredPlaceholders = filteredTraceIds.map(() => "?").join(", ")
+				const havingClauses: string[] = []
+				if (input.status === "error") havingClauses.push("error_count > 0")
+				if (input.status === "ok") havingClauses.push("error_count = 0")
+				if (input.minDurationMs != null) havingClauses.push(`duration_ms >= ${Number(input.minDurationMs)}`)
+				const having = havingClauses.length > 0 ? `HAVING ${havingClauses.join(" AND ")}` : ""
+
+				const summaryRows = db.query(`
+					${TRACE_SUMMARY_SQL}
+					WHERE trace_id IN (${filteredPlaceholders})
+					GROUP BY trace_id
+					${having}
+					ORDER BY started_at_ms DESC
+					LIMIT ?
+				`).all(...filteredTraceIds, limit) as TraceSummaryRow[]
+
+				return summaryRows.map(parseSummaryRow)
+			})
+		})
+
 		const getTrace = Effect.fn("motel/TelemetryStore.getTrace")(function* (traceId: string) {
 			return yield* Effect.sync(() => {
 				const rows = db.query(`
@@ -519,10 +700,49 @@ export const TelemetryStoreLive = Layer.effect(
 
 		const getSpan = Effect.fn("motel/TelemetryStore.getSpan")(function* (spanId: string) {
 			return yield* Effect.sync(() => {
-				const row = db.query(`SELECT trace_id FROM spans WHERE span_id = ? LIMIT 1`).get(spanId) as { trace_id: string } | null
-				if (!row) return null
-				const spanRows = db.query(`SELECT * FROM spans WHERE trace_id = ? ORDER BY start_time_ms ASC`).all(row.trace_id) as SpanRow[]
-				return buildSpanItem(row.trace_id, spanRows, spanId)
+				// Fetch only the target span row (uses idx_spans_span_id)
+				const spanRow = db.query(`SELECT * FROM spans WHERE span_id = ? LIMIT 1`).get(spanId) as SpanRow | null
+				if (!spanRow) return null
+
+				const traceId = spanRow.trace_id
+
+				// Get root operation name (indexed by trace_id)
+				const rootRow = db.query(`
+					SELECT operation_name FROM spans
+					WHERE trace_id = ? AND parent_span_id IS NULL
+					ORDER BY start_time_ms ASC LIMIT 1
+				`).get(traceId) as { operation_name: string } | null
+				const rootOperationName = rootRow?.operation_name ?? "unknown"
+
+				// Get parent operation name if span has a parent (PK lookup)
+				let parentOperationName: string | null = null
+				if (spanRow.parent_span_id) {
+					const parentRow = db.query(`
+						SELECT operation_name FROM spans
+						WHERE trace_id = ? AND span_id = ?
+					`).get(traceId, spanRow.parent_span_id) as { operation_name: string } | null
+					parentOperationName = parentRow?.operation_name ?? null
+				}
+
+				// Compute depth by walking up parent chain (typically 3-5 hops)
+				let depth = 0
+				let currentParentId = spanRow.parent_span_id
+				while (currentParentId) {
+					const parentRow = db.query(`
+						SELECT parent_span_id FROM spans WHERE trace_id = ? AND span_id = ?
+					`).get(traceId, currentParentId) as { parent_span_id: string | null } | null
+					if (!parentRow) break
+					depth++
+					currentParentId = parentRow.parent_span_id
+				}
+
+				const parsed = parseSpanRow(spanRow)
+				return {
+					traceId,
+					rootOperationName,
+					parentOperationName,
+					span: { ...parsed, depth },
+				} satisfies SpanItem
 			})
 		})
 
@@ -675,6 +895,10 @@ export const TelemetryStoreLive = Layer.effect(
 					clauses.push(`service_name = ?`)
 					params.push(input.serviceName)
 				}
+				if (input.severity) {
+					clauses.push(`severity_text = ?`)
+					params.push(input.severity.toUpperCase())
+				}
 				if (input.traceId) {
 					clauses.push(`trace_id = ?`)
 					params.push(input.traceId)
@@ -684,7 +908,7 @@ export const TelemetryStoreLive = Layer.effect(
 					params.push(input.spanId)
 				}
 				if (input.body) {
-					clauses.push(`body LIKE ?`)
+					clauses.push(`body LIKE ? COLLATE NOCASE`)
 					params.push(`%${input.body}%`)
 				}
 				if (input.lookbackMinutes) {
@@ -715,77 +939,240 @@ export const TelemetryStoreLive = Layer.effect(
 		})
 
 		const traceStats = Effect.fn("motel/TelemetryStore.traceStats")(function* (input: TraceStatsSearch) {
-			const traces = yield* searchTraces({
-				serviceName: input.serviceName,
-				operation: input.operation,
-				status: input.status,
-				minDurationMs: input.minDurationMs,
-				attributeFilters: input.attributeFilters,
-				lookbackMinutes: input.lookbackMinutes,
-				limit: Math.max(5000, input.limit ?? config.otel.traceFetchLimit),
-			})
+			const cutoff = (yield* Clock.currentTimeMillis) - (input.lookbackMinutes ?? config.otel.traceLookbackMinutes) * 60 * 1000
+			const limit = input.limit ?? 20
+			const hasAttrFilters = Object.keys(input.attributeFilters ?? {}).length > 0
+			const isAttrGroupBy = input.groupBy.startsWith("attr.")
 
-			const groups = new Map<string, TraceItem[]>()
-			for (const trace of traces) {
-				const group = input.groupBy === "service"
-					? trace.serviceName
-					: input.groupBy === "operation"
-						? trace.rootOperationName
-						: input.groupBy === "status"
-							? trace.errorCount > 0 ? "error" : "ok"
-							: input.groupBy.startsWith("attr.")
-								? trace.spans.find((span) => span.tags[input.groupBy.slice(5)] !== undefined)?.tags[input.groupBy.slice(5)] ?? "unknown"
-								: "unknown"
-				const bucket = groups.get(group) ?? []
-				bucket.push(trace)
-				groups.set(group, bucket)
+			// For attr.* groupBy or attr filters, fall back to summary-based aggregation
+			if (isAttrGroupBy || hasAttrFilters || input.operation) {
+				const summaries = yield* searchTraceSummaries({
+					serviceName: input.serviceName,
+					operation: input.operation,
+					status: input.status,
+					minDurationMs: input.minDurationMs,
+					attributeFilters: input.attributeFilters,
+					lookbackMinutes: input.lookbackMinutes,
+					limit: 5000,
+				})
+
+				// For attr.* groupBy, we need to check span attributes — but only the groupBy key
+				let attrLookup: Map<string, string> | null = null
+				if (isAttrGroupBy) {
+					const attrKey = input.groupBy.slice(5)
+					const traceIds = summaries.map((s) => s.traceId)
+					if (traceIds.length > 0) {
+						const placeholders = traceIds.map(() => "?").join(", ")
+						const rows = db.query(`
+							SELECT trace_id, attributes_json, resource_json FROM spans
+							WHERE trace_id IN (${placeholders})
+						`).all(...traceIds) as Array<{ trace_id: string; attributes_json: string; resource_json: string }>
+
+						attrLookup = new Map()
+						for (const row of rows) {
+							if (attrLookup.has(row.trace_id)) continue
+							const tags = { ...parseRecord(row.resource_json), ...parseRecord(row.attributes_json) }
+							if (tags[attrKey] !== undefined) {
+								attrLookup.set(row.trace_id, tags[attrKey]!)
+							}
+						}
+					}
+				}
+
+				const groups = new Map<string, { durations: number[]; errorTraces: number }>()
+				for (const summary of summaries) {
+					const group = input.groupBy === "service"
+						? summary.serviceName
+						: input.groupBy === "operation"
+							? summary.rootOperationName
+							: input.groupBy === "status"
+								? summary.errorCount > 0 ? "error" : "ok"
+								: isAttrGroupBy
+									? attrLookup?.get(summary.traceId) ?? "unknown"
+									: "unknown"
+
+					const bucket = groups.get(group) ?? { durations: [], errorTraces: 0 }
+					bucket.durations.push(summary.durationMs)
+					if (summary.errorCount > 0) bucket.errorTraces++
+					groups.set(group, bucket)
+				}
+
+				const rows = [...groups.entries()].map(([group, bucket]) => {
+					const count = bucket.durations.length
+					const value = input.agg === "count"
+						? count
+						: input.agg === "avg_duration"
+							? bucket.durations.reduce((sum, d) => sum + d, 0) / Math.max(1, count)
+							: input.agg === "p95_duration"
+								? percentile(bucket.durations, 0.95)
+								: bucket.errorTraces / Math.max(1, count)
+					return { group, value, count }
+				})
+
+				return rows.sort((left, right) => right.value - left.value).slice(0, limit)
 			}
 
-			const rows = [...groups.entries()].map(([group, items]) => {
-				const durations = items.map((item) => item.durationMs)
-				const errorCount = items.filter((item) => item.errorCount > 0).length
-				const value = input.agg === "count"
-					? items.length
+			// Pure SQL path for standard groupBy fields without attr filters
+			return yield* Effect.sync(() => {
+				const whereClauses: string[] = ["start_time_ms >= ?"]
+				const whereParams: Array<string | number> = [cutoff]
+
+				if (input.serviceName) {
+					whereClauses.push("service_name = ?")
+					whereParams.push(input.serviceName)
+				}
+
+				// Build a CTE that computes per-trace summaries
+				const havingClauses: string[] = []
+				if (input.status === "error") havingClauses.push("error_count > 0")
+				if (input.status === "ok") havingClauses.push("error_count = 0")
+				if (input.minDurationMs != null) havingClauses.push(`duration_ms >= ${Number(input.minDurationMs)}`)
+				const having = havingClauses.length > 0 ? `HAVING ${havingClauses.join(" AND ")}` : ""
+
+				const groupExpr = input.groupBy === "service"
+					? "service_name"
+					: input.groupBy === "operation"
+						? "root_operation_name"
+						: input.groupBy === "status"
+							? "CASE WHEN error_count > 0 THEN 'error' ELSE 'ok' END"
+							: "'unknown'"
+
+				const aggExpr = input.agg === "count"
+					? "COUNT(*)"
 					: input.agg === "avg_duration"
-						? durations.reduce((sum, duration) => sum + duration, 0) / Math.max(1, durations.length)
+						? "AVG(duration_ms)"
 						: input.agg === "p95_duration"
-							? percentile(durations, 0.95)
-							: errorCount / Math.max(1, items.length)
+							? "AVG(duration_ms)" // approximate; exact p95 below
+							: "CAST(SUM(CASE WHEN error_count > 0 THEN 1 ELSE 0 END) AS REAL) / MAX(COUNT(*), 1)"
 
-				return { group, value, count: items.length }
+				// For p95, we need the per-trace durations to compute in JS
+				if (input.agg === "p95_duration") {
+					const rows = db.query(`
+						WITH trace_summaries AS (
+							${TRACE_SUMMARY_SQL}
+							WHERE ${whereClauses.join(" AND ")}
+							GROUP BY trace_id
+							${having}
+						)
+						SELECT ${groupExpr} AS grp, duration_ms FROM trace_summaries
+					`).all(...whereParams) as Array<{ grp: string; duration_ms: number }>
+
+					const groups = new Map<string, number[]>()
+					for (const row of rows) {
+						const bucket = groups.get(row.grp) ?? []
+						bucket.push(row.duration_ms)
+						groups.set(row.grp, bucket)
+					}
+
+					return [...groups.entries()]
+						.map(([group, durations]) => ({ group, value: percentile(durations, 0.95), count: durations.length }))
+						.sort((left, right) => right.value - left.value)
+						.slice(0, limit)
+				}
+
+				const rows = db.query(`
+					WITH trace_summaries AS (
+						${TRACE_SUMMARY_SQL}
+						WHERE ${whereClauses.join(" AND ")}
+						GROUP BY trace_id
+						${having}
+					)
+					SELECT ${groupExpr} AS grp, ${aggExpr} AS value, COUNT(*) AS count
+					FROM trace_summaries
+					GROUP BY grp
+					ORDER BY value DESC
+					LIMIT ?
+				`).all(...whereParams, limit) as Array<{ grp: string; value: number; count: number }>
+
+				return rows.map((row) => ({ group: row.grp, value: row.value, count: row.count }))
 			})
-
-			return rows.sort((left, right) => right.value - left.value).slice(0, input.limit ?? 20)
 		})
 
 		const logStats = Effect.fn("motel/TelemetryStore.logStats")(function* (input: LogStatsSearch) {
-			const logs = yield* searchLogs({
-				serviceName: input.serviceName,
-				traceId: input.traceId,
-				spanId: input.spanId,
-				body: input.body,
-				attributeFilters: input.attributeFilters,
-				limit: Math.max(5000, input.limit ?? config.otel.logFetchLimit),
-			})
+			const now = yield* Clock.currentTimeMillis
+			const limit = input.limit ?? 20
+			const hasAttrFilters = Object.keys(input.attributeFilters ?? {}).length > 0
+			const isAttrGroupBy = input.groupBy.startsWith("attr.")
 
-			const groups = new Map<string, number>()
-			for (const log of logs) {
-				const group = input.groupBy === "service"
-					? log.serviceName
-					: input.groupBy === "severity"
-						? log.severityText
-						: input.groupBy === "scope"
-							? log.scopeName ?? "unknown"
-							: input.groupBy.startsWith("attr.")
-								? log.attributes[input.groupBy.slice(5)] ?? "unknown"
-								: "unknown"
-				groups.set(group, (groups.get(group) ?? 0) + 1)
+			// For attr.* groupBy or attr filters, fall back to in-memory grouping
+			if (isAttrGroupBy || hasAttrFilters) {
+				const logs = yield* searchLogs({
+					serviceName: input.serviceName,
+					traceId: input.traceId,
+					spanId: input.spanId,
+					body: input.body,
+					lookbackMinutes: input.lookbackMinutes,
+					attributeFilters: input.attributeFilters,
+					limit: 5000,
+				})
+
+				const groups = new Map<string, number>()
+				for (const log of logs) {
+					const group = input.groupBy === "service"
+						? log.serviceName
+						: input.groupBy === "severity"
+							? log.severityText
+							: input.groupBy === "scope"
+								? log.scopeName ?? "unknown"
+								: isAttrGroupBy
+									? log.attributes[input.groupBy.slice(5)] ?? "unknown"
+									: "unknown"
+					groups.set(group, (groups.get(group) ?? 0) + 1)
+				}
+
+				return [...groups.entries()]
+					.map(([group, count]) => ({ group, value: count, count }))
+					.sort((left, right) => right.value - left.value)
+					.slice(0, limit)
 			}
 
-			return [...groups.entries()]
-				.map(([group, count]) => ({ group, value: count, count }))
-				.sort((left, right) => right.value - left.value)
-				.slice(0, input.limit ?? 20)
+			// Pure SQL path for standard groupBy fields
+			return yield* Effect.sync(() => {
+				const clauses: string[] = []
+				const params: Array<string | number> = []
+
+				if (input.serviceName) {
+					clauses.push("service_name = ?")
+					params.push(input.serviceName)
+				}
+				if (input.traceId) {
+					clauses.push("trace_id = ?")
+					params.push(input.traceId)
+				}
+				if (input.spanId) {
+					clauses.push("span_id = ?")
+					params.push(input.spanId)
+				}
+				if (input.body) {
+					clauses.push("body LIKE ?")
+					params.push(`%${input.body}%`)
+				}
+				if (input.lookbackMinutes) {
+					clauses.push("timestamp_ms >= ?")
+					params.push(now - input.lookbackMinutes * 60 * 1000)
+				}
+
+				const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : ""
+
+				const groupExpr = input.groupBy === "service"
+					? "service_name"
+					: input.groupBy === "severity"
+						? "severity_text"
+						: input.groupBy === "scope"
+							? "COALESCE(scope_name, 'unknown')"
+							: "'unknown'"
+
+				const rows = db.query(`
+					SELECT ${groupExpr} AS grp, COUNT(*) AS count
+					FROM logs
+					${where}
+					GROUP BY grp
+					ORDER BY count DESC
+					LIMIT ?
+				`).all(...params, limit) as Array<{ grp: string; count: number }>
+
+				return rows.map((row) => ({ group: row.grp, value: row.count, count: row.count }))
+			})
 		})
 
 		const listRecentLogs = Effect.fn("motel/TelemetryStore.listRecentLogs")(function* (serviceName: string) {
@@ -861,22 +1248,23 @@ export const TelemetryStoreLive = Layer.effect(
 						return rows
 					}
 					if (input.field === "status") {
-						const traces = (db.query(`
-							SELECT trace_id
-							FROM spans
-							WHERE start_time_ms >= ?
-							${input.serviceName ? "AND service_name = ?" : ""}
-							GROUP BY trace_id
-							ORDER BY MAX(start_time_ms) DESC
-						`).all(...(input.serviceName ? [cutoff, input.serviceName] : [cutoff])) as Array<{ trace_id: string }>)
-
-						const result = new Map<string, number>()
-						for (const row of traces) {
-							const group = db.query(`SELECT COUNT(*) AS count FROM spans WHERE trace_id = ? AND status = 'error'`).get(row.trace_id) as { count: number }
-							const value = group.count > 0 ? "error" : "ok"
-							result.set(value, (result.get(value) ?? 0) + 1)
-						}
-						return [...result.entries()].map(([value, count]) => ({ value, count })).slice(0, limit)
+						const serviceFilter = input.serviceName ? "AND service_name = ?" : ""
+						const params = input.serviceName ? [cutoff, input.serviceName] : [cutoff]
+						const rows = db.query(`
+							SELECT trace_status AS value, COUNT(*) AS count
+							FROM (
+								SELECT
+									trace_id,
+									CASE WHEN SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) > 0 THEN 'error' ELSE 'ok' END AS trace_status
+								FROM spans
+								WHERE start_time_ms >= ? ${serviceFilter}
+								GROUP BY trace_id
+							)
+							GROUP BY trace_status
+							ORDER BY count DESC
+							LIMIT ?
+						`).all(...params, limit) as Array<{ value: string; count: number }>
+						return rows
 					}
 				}
 
@@ -893,7 +1281,9 @@ export const TelemetryStoreLive = Layer.effect(
 			ingestLogs,
 			listServices,
 			listRecentTraces,
+			listTraceSummaries,
 			searchTraces,
+			searchTraceSummaries,
 			traceStats,
 			getTrace,
 			getSpan,
