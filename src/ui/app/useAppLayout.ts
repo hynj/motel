@@ -28,7 +28,9 @@ export const useAppLayout = ({ width, height, notice, detailView, selectedSpanIn
 	const splitRatio = viewLevelForLayout === 2 ? 0.5 : 0.4
 	const leftPaneWidth = isWideLayout ? Math.max(40, Math.floor((contentWidth - splitGap) * splitRatio)) : contentWidth
 	const rightPaneWidth = isWideLayout ? Math.max(28, contentWidth - leftPaneWidth - splitGap) : contentWidth
-	const leftContentWidth = isWideLayout ? Math.max(24, leftPaneWidth - 3) : Math.max(24, contentWidth - sectionPadding * 2)
+	// Left pane: paddingLeft (1) + scrollbar column (1). No right padding —
+	// the vertical pane divider handles visual separation from the right pane.
+	const leftContentWidth = isWideLayout ? Math.max(24, leftPaneWidth - 2) : Math.max(24, contentWidth - sectionPadding * 2)
 	// Right pane keeps only left padding; the vertical pane divider on the
 	// right provides enough visual separation without a trailing blank column.
 	const rightContentWidth = isWideLayout ? Math.max(24, rightPaneWidth - sectionPadding) : Math.max(24, contentWidth - sectionPadding * 2)

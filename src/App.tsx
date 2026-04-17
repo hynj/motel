@@ -62,6 +62,11 @@ export const App = () => {
 
 	const noticeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 	const traceListScrollRef = useRef<ScrollBoxRenderable | null>(null)
+	// Tracks the selected trace's last-known index + id, so we can tell the
+	// difference between "user moved selection" and "refresh shifted rows"
+	// in the scroll-follow effect below.
+	const lastSelectedTraceIndexRef = useRef<number | null>(null)
+	const lastSelectedTraceIdRef = useRef<string | null>(null)
 
 	const flashNotice = (message: string) => {
 		if (noticeTimeoutRef.current !== null) {
@@ -86,22 +91,45 @@ export const App = () => {
 	useLayoutEffect(() => {
 		const box = traceListScrollRef.current
 		const traceId = selectedTraceSummary?.traceId
-		if (!box || !traceId) return
+		if (!box || !traceId) {
+			lastSelectedTraceIndexRef.current = null
+			lastSelectedTraceIdRef.current = null
+			return
+		}
 		const indexInList = filteredTraces.findIndex((trace) => trace.traceId === traceId)
-		if (indexInList < 0) return
+		if (indexInList < 0) {
+			lastSelectedTraceIndexRef.current = null
+			lastSelectedTraceIdRef.current = null
+			return
+		}
 		const currentTop = box.scrollTop
 		const viewportRows = Math.max(1, traceViewportRows)
+		const maxTop = Math.max(0, filteredTraces.length - viewportRows)
+
+		// Distinguish refresh (same traceId but new index) from user navigation
+		// (different traceId).
+		const prevIndex = lastSelectedTraceIndexRef.current
+		const prevId = lastSelectedTraceIdRef.current
+		const isRefreshShift = prevId === traceId && prevIndex !== null && prevIndex !== indexInList
+
 		let nextTop = currentTop
-		if (indexInList < currentTop) {
+		if (isRefreshShift) {
+			// Rows shifted around the selection while the user wasn't looking —
+			// move scrollTop by the same delta so the selected row keeps its
+			// visual position in the viewport.
+			nextTop = currentTop + (indexInList - prevIndex)
+		} else if (indexInList < currentTop) {
 			nextTop = indexInList
 		} else if (indexInList >= currentTop + viewportRows) {
 			nextTop = indexInList - viewportRows + 1
 		}
-		const maxTop = Math.max(0, filteredTraces.length - viewportRows)
 		nextTop = Math.max(0, Math.min(nextTop, maxTop))
 		if (nextTop !== currentTop) {
 			box.scrollTop = nextTop
 		}
+
+		lastSelectedTraceIndexRef.current = indexInList
+		lastSelectedTraceIdRef.current = traceId
 	}, [filteredTraces, selectedTraceIndex, selectedTraceSummary?.traceId, traceSort, traceViewportRows])
 
 	const { spanNavActive } = useKeyboardNav({

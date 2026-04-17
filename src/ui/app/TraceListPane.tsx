@@ -24,7 +24,11 @@ export const TraceListPane = ({
 	padding,
 	scrollRef,
 }: TraceListPaneProps) => (
-	<box height={containerHeight} flexDirection="column" paddingLeft={padding} paddingRight={padding}>
+	// paddingRight=0 on purpose — the vertical pane divider on the right
+	// already separates this from the trace details pane, and the scrollbar
+	// lives inside the scrollbox, so a trailing padding column would just
+	// be wasted space. useAppLayout.leftContentWidth is sized to match.
+	<box height={containerHeight} flexDirection="column" paddingLeft={padding} paddingRight={0}>
 		<TraceList showHeader {...traceListProps} />
 		{filterMode ? <FilterBar text={filterText} width={filterWidth} /> : null}
 		<scrollbox ref={scrollRef} height={filterMode ? bodyHeight - 1 : bodyHeight} flexGrow={0}>
