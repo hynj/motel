@@ -23,17 +23,18 @@ export const getVisibleSpans = (spans: readonly TraceSpanItem[], collapsedIds: R
 /** Find the index of a span's parent in the visible list. */
 export const findParentIndex = (spans: readonly TraceSpanItem[], index: number): number | null => {
 	const span = spans[index]
-	if (span.depth === 0) return null
+	if (!span || span.depth === 0) return null
 	for (let i = index - 1; i >= 0; i--) {
-		if (spans[i].depth < span.depth) return i
+		if (spans[i]!.depth < span.depth) return i
 	}
 	return null
 }
 
 /** Find the index of a span's first child in the visible list. */
 export const findFirstChildIndex = (spans: readonly TraceSpanItem[], index: number): number | null => {
+	const span = spans[index]
 	const next = spans[index + 1]
-	if (next && next.depth > spans[index].depth) return index + 1
+	if (span && next && next.depth > span.depth) return index + 1
 	return null
 }
 

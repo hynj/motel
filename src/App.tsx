@@ -1,4 +1,4 @@
-import type { ScrollBoxRenderable } from "@opentui/core"
+import { TextAttributes, type ScrollBoxRenderable } from "@opentui/core"
 import { useAtom } from "@effect/atom-react"
 import { useTerminalDimensions } from "@opentui/react"
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from "react"
@@ -499,13 +499,14 @@ export const App = () => {
 
 	// Header
 	const autoLabel = autoRefresh ? "\u25cf live" : "\u25cb paused"
-	const headerLeft = `MOTEL  service: ${selectedTraceService ?? "none"}`
+	const headerServiceLabel = selectedTraceService ?? "none"
 	const headerRight = traceState.fetchedAt
 		? `${autoLabel}  ${formatTimestamp(traceState.fetchedAt)}`
 		: traceState.status === "loading"
 			? "loading traces..."
 			: ""
-	const headerLine = `${fitCell(headerLeft, Math.max(0, headerFooterWidth - headerRight.length))}${headerRight}`
+	const headerLeft = `MOTEL  ${headerServiceLabel}`
+	const headerGap = Math.max(2, headerFooterWidth - headerLeft.length - headerRight.length)
 	const visibleFooterNotice = footerNotice ? fitCell(footerNotice.trimEnd(), headerFooterWidth) : null
 
 	const selectTraceById = useCallback((traceId: string) => {
@@ -549,7 +550,12 @@ export const App = () => {
 	return (
 		<box flexGrow={1} flexDirection="column">
 			<box paddingLeft={1} paddingRight={1} flexDirection="column">
-				<PlainLine text={headerLine} fg={colors.muted} bold />
+			<TextLine>
+				<span fg={colors.muted} attributes={TextAttributes.BOLD}>MOTEL</span>
+				<span fg={colors.muted}>{`  ${headerServiceLabel}`}</span>
+				<span fg={colors.muted}>{" ".repeat(headerGap)}</span>
+				<span fg={colors.muted} attributes={TextAttributes.BOLD}>{headerRight}</span>
+			</TextLine>
 			</box>
 			{showSplit
 				? <SplitDivider leftWidth={leftPaneWidth} junction={"\u252c"} rightWidth={rightPaneWidth} />
@@ -597,8 +603,6 @@ export const App = () => {
 				</box>
 			) : (
 				<>
-					<TraceDetailsPane trace={selectedTrace} traceSummary={selectedTraceSummary} traceStatus={traceDetailState.status} traceError={traceDetailState.error} traceLogsState={logState} contentWidth={rightContentWidth} bodyLines={narrowBodyLines} paneWidth={contentWidth} selectedSpanIndex={selectedSpanIndex} collapsedSpanIds={collapsedSpanIds} detailView={detailView} focused={spanNavActive} onSelectSpan={selectSpan} />
-					<Divider width={contentWidth} />
 					<box height={narrowListHeight} flexDirection="column" paddingLeft={sectionPadding} paddingRight={sectionPadding}>
 						<TraceList showHeader {...traceListProps} />
 						{filterMode ? <FilterBar text={filterText} width={leftContentWidth} /> : null}
@@ -606,6 +610,8 @@ export const App = () => {
 							<TraceList showHeader={false} {...traceListProps} />
 						</scrollbox>
 					</box>
+					<Divider width={contentWidth} />
+					<TraceDetailsPane trace={selectedTrace} traceSummary={selectedTraceSummary} traceStatus={traceDetailState.status} traceError={traceDetailState.error} traceLogsState={logState} contentWidth={rightContentWidth} bodyLines={narrowBodyLines} paneWidth={contentWidth} selectedSpanIndex={selectedSpanIndex} collapsedSpanIds={collapsedSpanIds} detailView={detailView} focused={spanNavActive} onSelectSpan={selectSpan} />
 				</>
 			)}
 			{footerHeight > 0 ? (

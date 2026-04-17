@@ -1,8 +1,9 @@
+import { TextAttributes } from "@opentui/core"
 import { memo } from "react"
 import { config } from "../config.ts"
 import type { TraceSummaryItem } from "../domain.ts"
 import { fitCell, formatDuration, lifecycleLabel, relativeTime, traceIndicator, traceIndicatorColor, traceRowId } from "./format.ts"
-import { AlignedHeaderLine, PlainLine, TextLine } from "./primitives.tsx"
+import { PlainLine, TextLine } from "./primitives.tsx"
 import type { LoadStatus } from "./state.ts"
 import { colors } from "./theme.ts"
 
@@ -79,18 +80,24 @@ export const TraceList = ({
 	onSelectTrace: (traceId: string) => void
 }) => {
 	if (showHeader) {
-		const filterLabel = filterText ? ` \u00b7 filter: ${filterText}` : ""
-		const sortLabel = sortMode && sortMode !== "recent" ? ` \u00b7 sort: ${sortMode}` : ""
-		const countLabel = totalCount !== undefined && totalCount !== traces.length ? ` (${traces.length}/${totalCount})` : ` (${traces.length})`
+		const countLabel = totalCount !== undefined && totalCount !== traces.length ? `${traces.length}/${totalCount}` : traces.length > 0 ? String(traces.length) : ""
+		const metaLabel = [
+			filterText ? `filter: ${filterText}` : null,
+			sortMode && sortMode !== "recent" ? `sort: ${sortMode}` : null,
+		].filter((part): part is string => part !== null).join(" · ")
 		const serviceLabel = services.length > 1 && selectedService
 			? `${services.length} services`
 			: ""
+		const leftLabel = `TRACES${countLabel ? ` ${countLabel}` : ""}${metaLabel ? ` · ${metaLabel}` : ""}`
+		const gap = Math.max(2, contentWidth - leftLabel.length - serviceLabel.length)
 		return (
-			<AlignedHeaderLine
-				left={`TRACES${countLabel}${filterLabel}${sortLabel}`}
-				right={serviceLabel}
-				width={contentWidth}
-			/>
+			<TextLine>
+				<span fg={colors.accent} attributes={TextAttributes.BOLD}>TRACES</span>
+				{countLabel ? <span fg={colors.muted}>{` ${countLabel}`}</span> : null}
+				{metaLabel ? <span fg={colors.muted}>{` · ${metaLabel}`}</span> : null}
+				<span fg={colors.muted}>{" ".repeat(gap)}</span>
+				<span fg={colors.muted}>{serviceLabel}</span>
+			</TextLine>
 		)
 	}
 

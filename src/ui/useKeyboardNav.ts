@@ -441,35 +441,49 @@ export const useKeyboardNav = (params: KeyboardNavParams) => {
 		}
 		if (key.name === "left" || key.name === "h") {
 			if (s.spanNavActive && s.selectedTrace) {
-				const visible = getVisibleSpans(s.selectedTrace.spans, s.collapsedSpanIds)
-				const span = visible[s.selectedSpanIndex!]
-				if (!span) return
-				const fullIndex = s.selectedTrace.spans.indexOf(span)
-				if (fullIndex >= 0 && findFirstChildIndex(s.selectedTrace.spans, fullIndex) !== null && !s.collapsedSpanIds.has(span.spanId)) {
-					const next = new Set(s.collapsedSpanIds)
-					next.add(span.spanId)
-					setCollapsedSpanIds(next)
-				} else {
-					const parentIdx = findParentIndex(visible, s.selectedSpanIndex!)
+				const trace = s.selectedTrace
+				setCollapsedSpanIds((currentCollapsed) => {
+					const visible = getVisibleSpans(trace.spans, currentCollapsed)
+					const idx = s.selectedSpanIndex
+					if (idx === null || idx < 0 || idx >= visible.length) return currentCollapsed
+					const span = visible[idx]!
+					const fullIndex = trace.spans.indexOf(span)
+					const hasKids = fullIndex >= 0 && findFirstChildIndex(trace.spans, fullIndex) !== null
+					// If the span has kids and is expanded, collapse it (selection stays on span).
+					if (hasKids && !currentCollapsed.has(span.spanId)) {
+						const next = new Set(currentCollapsed)
+						next.add(span.spanId)
+						return next
+					}
+					// Otherwise walk to parent in the current visible list.
+					const parentIdx = findParentIndex(visible, idx)
 					if (parentIdx !== null) setSelectedSpanIndex(parentIdx)
-				}
+					return currentCollapsed
+				})
 			}
 			return
 		}
 		if (key.name === "right" || key.name === "l") {
 			if (s.spanNavActive && s.selectedTrace) {
-				const visible = getVisibleSpans(s.selectedTrace.spans, s.collapsedSpanIds)
-				const span = visible[s.selectedSpanIndex!]
-				if (!span) return
-				const fullIndex = s.selectedTrace.spans.indexOf(span)
-				if (fullIndex >= 0 && findFirstChildIndex(s.selectedTrace.spans, fullIndex) !== null && s.collapsedSpanIds.has(span.spanId)) {
-					const next = new Set(s.collapsedSpanIds)
-					next.delete(span.spanId)
-					setCollapsedSpanIds(next)
-				} else {
-					const childIdx = findFirstChildIndex(visible, s.selectedSpanIndex!)
+				const trace = s.selectedTrace
+				setCollapsedSpanIds((currentCollapsed) => {
+					const visible = getVisibleSpans(trace.spans, currentCollapsed)
+					const idx = s.selectedSpanIndex
+					if (idx === null || idx < 0 || idx >= visible.length) return currentCollapsed
+					const span = visible[idx]!
+					const fullIndex = trace.spans.indexOf(span)
+					const hasKids = fullIndex >= 0 && findFirstChildIndex(trace.spans, fullIndex) !== null
+					// If the span has kids and is collapsed, expand it (selection stays on span).
+					if (hasKids && currentCollapsed.has(span.spanId)) {
+						const next = new Set(currentCollapsed)
+						next.delete(span.spanId)
+						return next
+					}
+					// Otherwise walk into first child in the current visible list.
+					const childIdx = findFirstChildIndex(visible, idx)
 					if (childIdx !== null) setSelectedSpanIndex(childIdx)
-				}
+					return currentCollapsed
+				})
 			} else if (!s.spanNavActive && !s.serviceLogNavActive) {
 				toggleServiceLogsView()
 			}
