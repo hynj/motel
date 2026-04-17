@@ -565,9 +565,18 @@ export const App = () => {
 	// Wide layout: whether to show a split separator between the two panes.
 	const showSplit = isWideLayout
 
-	// Row within the right pane where the internal divider sits.
-	// Both TraceDetailsPane and SpanDetailPane header is: 1 (title) + 2 (info) + 1 (divider) = 4 rows → junction on row 3.
-	const separatorJunctionRows = useMemo(() => new Set([3]), [])
+	// Row within each pane where the internal divider sits. Both TraceDetailsPane
+	// and SpanDetailPane header is: 1 (title) + 2 (info) + 1 (divider) = 4 rows
+	// → junction on row 3.
+	//
+	// At L0/L1 the left pane is the TraceList (no internal divider at row 3),
+	// so the separator only needs to connect to the right pane (`├`). At L2
+	// both panes have a divider at row 3, so we need a full cross (`┼`).
+	const separatorJunctionChars = useMemo(() => {
+		const m = new Map<number, string>()
+		m.set(3, viewLevel === 2 ? "\u253c" : "\u251c")
+		return m
+	}, [viewLevel])
 
 	return (
 		<box flexGrow={1} flexDirection="column">
@@ -639,7 +648,7 @@ export const App = () => {
 							/>
 						)}
 					</box>
-					<SeparatorColumn height={wideBodyHeight} junctionRows={separatorJunctionRows} />
+					<SeparatorColumn height={wideBodyHeight} junctionChars={separatorJunctionChars} />
 					<box width={rightPaneWidth} height={wideBodyHeight} flexDirection="column">
 						{viewLevel <= 1 ? (
 							<TraceDetailsPane

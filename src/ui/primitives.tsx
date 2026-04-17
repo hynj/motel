@@ -61,10 +61,17 @@ export const SplitDivider = ({ leftWidth, junction, rightWidth }: { leftWidth: n
 	</box>
 )
 
-export const SeparatorColumn = ({ height, junctionRows }: { height: number; junctionRows?: ReadonlySet<number> }) => {
+/** Row index → junction character override. Callers supply exactly the
+ *  glyph they want at each row so the separator lines up with whatever
+ *  divider geometry the neighboring panes happen to have:
+ *    - `\u251c` (├) when only the right pane has a divider at that row
+ *    - `\u2524` (┤) when only the left pane has a divider at that row
+ *    - `\u253c` (┼) when both do
+ */
+export const SeparatorColumn = ({ height, junctionChars }: { height: number; junctionChars?: ReadonlyMap<number, string> }) => {
 	const lines: string[] = []
 	for (let i = 0; i < Math.max(1, height); i++) {
-		lines.push(junctionRows?.has(i) ? "\u251c" : "\u2502")
+		lines.push(junctionChars?.get(i) ?? "\u2502")
 	}
 	return (
 		<box width={1} height={height} overflow="hidden">
