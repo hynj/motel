@@ -66,6 +66,7 @@ export const useAppLayout = ({ width, height, notice, detailView, selectedSpanIn
 		narrowFullBodyLines,
 		wideTraceListBodyHeight,
 		narrowTraceListBodyHeight,
+		traceViewportRows,
 		tracePageSize,
 		spanPageSize,
 	} as const

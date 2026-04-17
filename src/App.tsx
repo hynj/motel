@@ -2,99 +2,64 @@ import { TextAttributes, type ScrollBoxRenderable } from "@opentui/core"
 import { useAtom } from "@effect/atom-react"
 import { useTerminalDimensions } from "@opentui/react"
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from "react"
-import { config } from "./config.js"
-import type { LogItem, TraceItem } from "./domain.ts"
-import { formatShortDate, formatTimestamp, traceRowId } from "./ui/format.ts"
+import { formatTimestamp, traceRowId } from "./ui/format.ts"
 import { Divider, FooterHints, HelpModal, PlainLine, SplitDivider, TextLine } from "./ui/primitives.tsx"
 import { useAppLayout } from "./ui/app/useAppLayout.ts"
+import { useTraceScreenData } from "./ui/app/useTraceScreenData.ts"
 import { TraceWorkspace } from "./ui/app/TraceWorkspace.tsx"
-import {
-	autoRefreshAtom,
-	collapsedSpanIdsAtom,
-	detailViewAtom,
-	filterModeAtom,
-	filterTextAtom,
-	initialTraceDetailState,
-	traceSortAtom,
-	initialLogState,
-	initialServiceLogState,
-	loadRecentTraceSummaries,
-	loadTraceDetail,
-	loadServiceLogs,
-	loadTraceLogs,
-	loadTraceServices,
-	logStateAtom,
-	noticeAtom,
-	persistSelectedService,
-	refreshNonceAtom,
-	selectedServiceLogIndexAtom,
-	selectedSpanIndexAtom,
-	selectedTraceIndexAtom,
-	selectedTraceServiceAtom,
-	serviceLogStateAtom,
-	showHelpAtom,
-	traceDetailStateAtom,
-	traceStateAtom,
-} from "./ui/state.ts"
+import { noticeAtom } from "./ui/state.ts"
 import { colors, SEPARATOR } from "./ui/theme.ts"
 import { getVisibleSpans } from "./ui/Waterfall.tsx"
 import { useKeyboardNav } from "./ui/useKeyboardNav.ts"
 
 export const App = () => {
 	const { width, height } = useTerminalDimensions()
-	const [traceState, setTraceState] = useAtom(traceStateAtom)
-	const [traceDetailState, setTraceDetailState] = useAtom(traceDetailStateAtom)
-	const [logState, setLogState] = useAtom(logStateAtom)
-	const [serviceLogState, setServiceLogState] = useAtom(serviceLogStateAtom)
-	const [selectedServiceLogIndex, setSelectedServiceLogIndex] = useAtom(selectedServiceLogIndexAtom)
-	const [selectedTraceIndex, setSelectedTraceIndex] = useAtom(selectedTraceIndexAtom)
-	const [selectedTraceService, setSelectedTraceService] = useAtom(selectedTraceServiceAtom)
-	const [refreshNonce, setRefreshNonce] = useAtom(refreshNonceAtom)
 	const [notice, setNotice] = useAtom(noticeAtom)
-	const [selectedSpanIndex, setSelectedSpanIndex] = useAtom(selectedSpanIndexAtom)
-	const [detailView, setDetailView] = useAtom(detailViewAtom)
-	const [showHelp, setShowHelp] = useAtom(showHelpAtom)
-	const [collapsedSpanIds, setCollapsedSpanIds] = useAtom(collapsedSpanIdsAtom)
-	const [autoRefresh] = useAtom(autoRefreshAtom)
-	const [filterMode] = useAtom(filterModeAtom)
-	const [filterText] = useAtom(filterTextAtom)
-	const [traceSort] = useAtom(traceSortAtom)
+	const {
+		traceState,
+		traceDetailState,
+		logState,
+		serviceLogState,
+		selectedServiceLogIndex,
+		setSelectedServiceLogIndex,
+		selectedTraceIndex,
+		setSelectedTraceIndex,
+		selectedTraceService,
+		selectedSpanIndex,
+		setSelectedSpanIndex,
+		detailView,
+		showHelp,
+		setShowHelp,
+		collapsedSpanIds,
+		autoRefresh,
+		filterMode,
+		filterText,
+		traceSort,
+		selectedTraceSummary,
+		selectedTrace,
+		filteredTraces,
+	} = useTraceScreenData()
 
 	const layout = useAppLayout({ width, height, notice, detailView, selectedSpanIndex })
 	const {
 		contentWidth,
 		isWideLayout,
-		sectionPadding,
-		availableContentHeight,
 		viewLevel,
 		footerNotice,
 		footerHeight,
 		leftPaneWidth,
 		rightPaneWidth,
 		leftContentWidth,
-		rightContentWidth,
 		headerFooterWidth,
-		wideBodyHeight,
 		wideBodyLines,
-		narrowListHeight,
 		narrowBodyLines,
-		narrowFullBodyLines,
-		wideTraceListBodyHeight,
-		narrowTraceListBodyHeight,
+		traceViewportRows,
 		tracePageSize,
 		spanPageSize,
 	} = layout
 
-	// Refs
 	const noticeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 	const traceListScrollRef = useRef<ScrollBoxRenderable | null>(null)
-	const selectedTraceRef = useRef<string | null>(null)
-	const cacheEpochRef = useRef(0)
-	const traceDetailCacheRef = useRef(new Map<string, { data: TraceItem | null; fetchedAt: Date }>())
-	const traceLogCacheRef = useRef(new Map<string, { data: readonly LogItem[]; fetchedAt: Date }>())
-	const serviceLogCacheRef = useRef(new Map<string, { data: readonly LogItem[]; fetchedAt: Date }>())
-	const traceDetailInflightRef = useRef(new Map<string, Promise<{ readonly error: string | null }>>())
-	const traceLogInflightRef = useRef(new Map<string, Promise<{ readonly error: string | null }>>())
 
 	const flashNotice = (message: string) => {
 		if (noticeTimeoutRef.current !== null) {
@@ -106,380 +71,33 @@ export const App = () => {
 		}, 2500)
 	}
 
-	// Cleanup timeouts
 	useEffect(() => () => {
 		if (noticeTimeoutRef.current !== null) {
 			clearTimeout(noticeTimeoutRef.current)
 		}
-	}, [])
+	}, [setNotice])
 
-	useEffect(() => {
-		if (selectedTraceService) persistSelectedService(selectedTraceService)
-	}, [selectedTraceService])
-
-	// Auto-refresh every 5 seconds
-	useEffect(() => {
-		if (!autoRefresh) return
-		const id = setInterval(() => setRefreshNonce((n) => n + 1), 5000)
-		return () => clearInterval(id)
-	}, [autoRefresh])
-
-	useEffect(() => {
-		cacheEpochRef.current += 1
-		traceDetailCacheRef.current.clear()
-		traceLogCacheRef.current.clear()
-		serviceLogCacheRef.current.clear()
-		traceDetailInflightRef.current.clear()
-		traceLogInflightRef.current.clear()
-	}, [refreshNonce])
-
-	// Load traces
-	useEffect(() => {
-		let cancelled = false
-
-		const load = async () => {
-			setTraceState((current) => ({
-				...current,
-				status: current.fetchedAt === null ? "loading" : "ready",
-				error: null,
-			}))
-
-			try {
-				const services = await loadTraceServices()
-				if (cancelled) return
-
-				const effectiveService = services.includes(selectedTraceService ?? "")
-					? selectedTraceService
-					: selectedTraceService ?? services[0] ?? config.otel.serviceName
-
-				if (effectiveService !== selectedTraceService) {
-					setSelectedTraceService(effectiveService)
-				}
-
-				const traces = effectiveService ? await loadRecentTraceSummaries(effectiveService) : []
-				if (cancelled) return
-
-				// Preserve selection by trace ID across refreshes
-				const prevTraceId = selectedTraceRef.current
-				setTraceState({
-					status: "ready",
-					services,
-					data: traces,
-					error: null,
-					fetchedAt: new Date(),
-				})
-				if (prevTraceId) {
-					const newIndex = traces.findIndex((t) => t.traceId === prevTraceId)
-					if (newIndex >= 0) setSelectedTraceIndex(newIndex)
-				}
-			} catch (error) {
-				if (cancelled) return
-				setTraceState((current) => ({
-					...current,
-					status: "error",
-					error: error instanceof Error ? error.message : String(error),
-				}))
-			}
-		}
-
-		void load()
-
-		return () => {
-			cancelled = true
-		}
-	}, [refreshNonce, selectedTraceService])
-
-	// Clamp trace index
-	useEffect(() => {
-		setSelectedTraceIndex((current) => {
-			if (traceState.data.length === 0) return 0
-			return Math.max(0, Math.min(current, traceState.data.length - 1))
-		})
-	}, [traceState.data.length])
-
-	const selectedTraceSummary = traceState.data[selectedTraceIndex] ?? null
-	const selectedTraceId = selectedTraceSummary?.traceId ?? null
-	const selectedTrace = traceDetailState.traceId === selectedTraceId ? traceDetailState.data : null
-	selectedTraceRef.current = selectedTraceId
-
-	const warmTraceDetail = useCallback((traceId: string, hydrateSelection: boolean) => {
-		const cached = traceDetailCacheRef.current.get(traceId)
-		if (cached) {
-			if (hydrateSelection && selectedTraceRef.current === traceId) {
-				setTraceDetailState({
-					status: "ready",
-					traceId,
-					data: cached.data,
-					error: null,
-					fetchedAt: cached.fetchedAt,
-				})
-			}
-			return Promise.resolve({ error: null })
-		}
-
-		const existing = traceDetailInflightRef.current.get(traceId)
-		if (existing) {
-			if (hydrateSelection) {
-				void existing.then(({ error }) => {
-					if (selectedTraceRef.current !== traceId) return
-					const ready = traceDetailCacheRef.current.get(traceId)
-					if (ready) {
-						setTraceDetailState({ status: "ready", traceId, data: ready.data, error: null, fetchedAt: ready.fetchedAt })
-						return
-					}
-					if (error) {
-						setTraceDetailState({ status: "error", traceId, data: null, error, fetchedAt: null })
-					}
-				})
-			}
-			return existing
-		}
-
-		const epoch = cacheEpochRef.current
-		const request = loadTraceDetail(traceId)
-			.then((trace) => {
-				if (cacheEpochRef.current !== epoch) return { error: null }
-				const fetchedAt = new Date()
-				traceDetailCacheRef.current.set(traceId, { data: trace, fetchedAt })
-				if (hydrateSelection && selectedTraceRef.current === traceId) {
-					setTraceDetailState({ status: "ready", traceId, data: trace, error: null, fetchedAt })
-				}
-				return { error: null }
-			})
-			.catch((error) => {
-				const message = error instanceof Error ? error.message : String(error)
-				if (cacheEpochRef.current === epoch && hydrateSelection && selectedTraceRef.current === traceId) {
-					setTraceDetailState({ status: "error", traceId, data: null, error: message, fetchedAt: null })
-				}
-				return { error: message }
-			})
-			.finally(() => {
-				traceDetailInflightRef.current.delete(traceId)
-			})
-
-		traceDetailInflightRef.current.set(traceId, request)
-		return request
-	}, [setTraceDetailState])
-
-	const warmTraceLogs = useCallback((traceId: string, hydrateSelection: boolean) => {
-		const cached = traceLogCacheRef.current.get(traceId)
-		if (cached) {
-			if (hydrateSelection && selectedTraceRef.current === traceId) {
-				setLogState({ status: "ready", traceId, data: cached.data, error: null, fetchedAt: cached.fetchedAt })
-			}
-			return Promise.resolve({ error: null })
-		}
-
-		const existing = traceLogInflightRef.current.get(traceId)
-		if (existing) {
-			if (hydrateSelection) {
-				void existing.then(({ error }) => {
-					if (selectedTraceRef.current !== traceId) return
-					const ready = traceLogCacheRef.current.get(traceId)
-					if (ready) {
-						setLogState({ status: "ready", traceId, data: ready.data, error: null, fetchedAt: ready.fetchedAt })
-						return
-					}
-					if (error) {
-						setLogState({ status: "error", traceId, data: [], error, fetchedAt: null })
-					}
-				})
-			}
-			return existing
-		}
-
-		const epoch = cacheEpochRef.current
-		const request = loadTraceLogs(traceId)
-			.then((logs) => {
-				if (cacheEpochRef.current !== epoch) return { error: null }
-				const fetchedAt = new Date()
-				traceLogCacheRef.current.set(traceId, { data: logs, fetchedAt })
-				if (hydrateSelection && selectedTraceRef.current === traceId) {
-					setLogState({ status: "ready", traceId, data: logs, error: null, fetchedAt })
-				}
-				return { error: null }
-			})
-			.catch((error) => {
-				const message = error instanceof Error ? error.message : String(error)
-				if (cacheEpochRef.current === epoch && hydrateSelection && selectedTraceRef.current === traceId) {
-					setLogState({ status: "error", traceId, data: [], error: message, fetchedAt: null })
-				}
-				return { error: message }
-			})
-			.finally(() => {
-				traceLogInflightRef.current.delete(traceId)
-			})
-
-		traceLogInflightRef.current.set(traceId, request)
-		return request
-	}, [setLogState])
-
-	useEffect(() => {
-		if (!selectedTraceId) {
-			setTraceDetailState(initialTraceDetailState)
-			return
-		}
-
-		const cached = traceDetailCacheRef.current.get(selectedTraceId)
-		if (cached) {
-			setTraceDetailState({
-				status: "ready",
-				traceId: selectedTraceId,
-				data: cached.data,
-				error: null,
-				fetchedAt: cached.fetchedAt,
-			})
-			return
-		}
-
-		setTraceDetailState((current) => ({
-			status: current.traceId === selectedTraceId && current.fetchedAt !== null ? "ready" : "loading",
-			traceId: selectedTraceId,
-			data: current.traceId === selectedTraceId ? current.data : null,
-			error: null,
-			fetchedAt: current.traceId === selectedTraceId ? current.fetchedAt : null,
-		}))
-
-		void warmTraceDetail(selectedTraceId, true)
-	}, [refreshNonce, selectedTraceId, setTraceDetailState, warmTraceDetail])
-
-	// Reset collapsed spans and span selection when trace changes
-	useEffect(() => {
-		setCollapsedSpanIds(new Set())
-		setSelectedSpanIndex(null)
-	}, [selectedTraceId])
-
-	// Clamp span index against visible (filtered) span count
-	useEffect(() => {
-		if (selectedSpanIndex === null) return
-		if (!selectedTrace || selectedTrace.spans.length === 0) {
-			setSelectedSpanIndex(null)
-			setDetailView("waterfall")
-			return
-		}
-		const visibleCount = getVisibleSpans(selectedTrace.spans, collapsedSpanIds).length
-		if (selectedSpanIndex >= visibleCount) {
-			setSelectedSpanIndex(visibleCount - 1)
-		}
-	}, [selectedTrace, selectedSpanIndex, collapsedSpanIds, setSelectedSpanIndex, setDetailView])
-
-	// Scroll selected trace into view (use summary ID, not detail which loads async)
 	useLayoutEffect(() => {
+		const box = traceListScrollRef.current
 		const traceId = selectedTraceSummary?.traceId
-		if (!traceId) return
-		traceListScrollRef.current?.scrollChildIntoView(traceRowId(traceId))
-	}, [selectedTraceIndex, selectedTraceSummary?.traceId, filterText])
-
-	// Load trace logs
-	useEffect(() => {
-		const traceId = selectedTraceId
-		if (!traceId) {
-			setLogState(initialLogState)
-			return
+		if (!box || !traceId) return
+		const indexInList = filteredTraces.findIndex((trace) => trace.traceId === traceId)
+		if (indexInList < 0) return
+		const currentTop = box.scrollTop
+		const viewportRows = Math.max(1, traceViewportRows)
+		let nextTop = currentTop
+		if (indexInList < currentTop) {
+			nextTop = indexInList
+		} else if (indexInList >= currentTop + viewportRows) {
+			nextTop = indexInList - viewportRows + 1
 		}
-
-		const cached = traceLogCacheRef.current.get(traceId)
-		if (cached) {
-			setLogState({ status: "ready", traceId, data: cached.data, error: null, fetchedAt: cached.fetchedAt })
-			return
+		const maxTop = Math.max(0, filteredTraces.length - viewportRows)
+		nextTop = Math.max(0, Math.min(nextTop, maxTop))
+		if (nextTop !== currentTop) {
+			box.scrollTop = nextTop
 		}
+	}, [filteredTraces, selectedTraceIndex, selectedTraceSummary?.traceId, traceSort, traceViewportRows])
 
-		setLogState((current) => ({
-			status: current.traceId === traceId && current.fetchedAt !== null ? "ready" : "loading",
-			traceId,
-			data: current.traceId === traceId ? current.data : [],
-			error: null,
-			fetchedAt: current.traceId === traceId ? current.fetchedAt : null,
-		}))
-
-		void warmTraceLogs(traceId, true)
-	}, [refreshNonce, selectedTraceId, setLogState, warmTraceLogs])
-
-	// Load service logs
-	useEffect(() => {
-		if (detailView !== "service-logs") return
-
-		const serviceName = selectedTraceService
-		if (!serviceName) {
-			setServiceLogState(initialServiceLogState)
-			return
-		}
-
-		const cached = serviceLogCacheRef.current.get(serviceName)
-		if (cached) {
-			setServiceLogState({ status: "ready", serviceName, data: cached.data, error: null, fetchedAt: cached.fetchedAt })
-			return
-		}
-
-		let cancelled = false
-
-		setServiceLogState((current) => ({
-			status: current.serviceName === serviceName && current.fetchedAt !== null ? "ready" : "loading",
-			serviceName,
-			data: current.serviceName === serviceName ? current.data : [],
-			error: null,
-			fetchedAt: current.serviceName === serviceName ? current.fetchedAt : null,
-		}))
-
-		void (async () => {
-			try {
-				const logs = await loadServiceLogs(serviceName)
-				const fetchedAt = new Date()
-				serviceLogCacheRef.current.set(serviceName, { data: logs, fetchedAt })
-				if (cancelled) return
-				setServiceLogState({ status: "ready", serviceName, data: logs, error: null, fetchedAt })
-			} catch (error) {
-				if (cancelled) return
-				setServiceLogState({ status: "error", serviceName, data: [], error: error instanceof Error ? error.message : String(error), fetchedAt: null })
-			}
-		})()
-
-		return () => { cancelled = true }
-	}, [detailView, refreshNonce, selectedTraceService, setServiceLogState])
-
-	// Clamp service log index
-	useEffect(() => {
-		setSelectedServiceLogIndex((current) => {
-			if (serviceLogState.data.length === 0) return 0
-			return Math.max(0, Math.min(current, serviceLogState.data.length - 1))
-		})
-	}, [serviceLogState.data.length, setSelectedServiceLogIndex])
-
-	// Apply trace filter
-	const preFilterTraces = filterText
-		? traceState.data.filter((trace) => {
-			const needle = filterText.toLowerCase()
-			const errorOnly = needle.includes(":error")
-			const textNeedle = needle.replace(":error", "").trim()
-			if (errorOnly && trace.errorCount === 0) return false
-			if (textNeedle && !trace.rootOperationName.toLowerCase().includes(textNeedle)) return false
-			return true
-		})
-		: traceState.data
-
-	// Apply sort (default is recent, which is the server's order)
-	const filteredTraces = traceSort === "recent"
-		? preFilterTraces
-		: [...preFilterTraces].sort((a, b) => {
-			if (traceSort === "slowest") return b.durationMs - a.durationMs
-			if (traceSort === "errors") return b.errorCount - a.errorCount || b.startedAt.getTime() - a.startedAt.getTime()
-			return 0
-		})
-
-	useEffect(() => {
-		if (!selectedTraceId || filteredTraces.length === 0) return
-		const currentIndex = filteredTraces.findIndex((trace) => trace.traceId === selectedTraceId)
-		if (currentIndex < 0) return
-
-		for (const offset of [-1, 1] as const) {
-			const neighborId = filteredTraces[currentIndex + offset]?.traceId
-			if (!neighborId) continue
-			void warmTraceDetail(neighborId, false)
-			void warmTraceLogs(neighborId, false)
-		}
-	}, [filteredTraces, selectedTraceId, warmTraceDetail, warmTraceLogs])
-
-	// Keyboard navigation
 	const { spanNavActive } = useKeyboardNav({
 		selectedTrace,
 		filteredTraces,
@@ -491,33 +109,31 @@ export const App = () => {
 		flashNotice,
 	})
 
-	// Header
-	const autoLabel = autoRefresh ? "\u25cf live" : "\u25cb paused"
 	const headerServiceLabel = selectedTraceService ?? "none"
+	const autoLabel = autoRefresh ? "● live" : "○ paused"
 	const headerRight = traceState.fetchedAt
 		? `${autoLabel}  ${formatTimestamp(traceState.fetchedAt)}`
 		: traceState.status === "loading"
 			? "loading traces..."
 			: ""
-	// Rendered text is "MOTEL" + " · " (3 chars) + <service>
-	const headerLeftLen = "MOTEL".length + 3 + headerServiceLabel.length
+	const headerLeftLen = "MOTEL".length + SEPARATOR.length + headerServiceLabel.length
 	const headerGap = Math.max(2, headerFooterWidth - headerLeftLen - headerRight.length)
 	const visibleFooterNotice = footerNotice
 
 	const selectTraceById = useCallback((traceId: string) => {
 		const index = traceState.data.findIndex((trace) => trace.traceId === traceId)
 		if (index >= 0) setSelectedTraceIndex(index)
-	}, [traceState.data, setSelectedTraceIndex])
+	}, [setSelectedTraceIndex, traceState.data])
 
 	const selectSpan = useCallback((index: number) => {
 		if (!selectedTrace) return
 		const visibleCount = getVisibleSpans(selectedTrace.spans, collapsedSpanIds).length
 		setSelectedSpanIndex(Math.max(0, Math.min(index, visibleCount - 1)))
-	}, [selectedTrace, collapsedSpanIds, setSelectedSpanIndex])
+	}, [collapsedSpanIds, selectedTrace, setSelectedSpanIndex])
 
 	const traceListProps = useMemo(() => ({
 		traces: filteredTraces,
-		selectedTraceId,
+		selectedTraceId: selectedTraceSummary?.traceId ?? null,
 		status: traceState.status,
 		error: traceState.error,
 		contentWidth: leftContentWidth,
@@ -528,48 +144,30 @@ export const App = () => {
 		sortMode: traceSort,
 		totalCount: filterText ? traceState.data.length : undefined,
 		onSelectTrace: selectTraceById,
-	} as const), [filteredTraces, selectedTraceId, traceState.status, traceState.error, leftContentWidth, traceState.services, selectedTraceService, spanNavActive, filterText, traceSort, traceState.data.length, selectTraceById])
+	} as const), [filteredTraces, selectedTraceSummary?.traceId, traceState.status, traceState.error, leftContentWidth, traceState.services, selectedTraceService, spanNavActive, filterText, traceSort, traceState.data.length, selectTraceById])
 
-	// Drill-in state machine:
-	//   level 0: trace list focused
-	//   level 1: span nav (waterfall focused)
-	//   level 2: span detail focused
-	const filteredSpansApp = selectedTrace ? getVisibleSpans(selectedTrace.spans, collapsedSpanIds) : []
-	const selectedSpan = selectedSpanIndex !== null ? filteredSpansApp[selectedSpanIndex] ?? null : null
+	const filteredSpans = selectedTrace ? getVisibleSpans(selectedTrace.spans, collapsedSpanIds) : []
+	const selectedSpan = selectedSpanIndex !== null ? filteredSpans[selectedSpanIndex] ?? null : null
 	const selectedSpanLogs = useMemo(
 		() => selectedSpan ? logState.data.filter((log) => log.spanId === selectedSpan.spanId) : [],
 		[selectedSpan, logState.data],
 	)
 
-	// Wide layout: whether to show a split separator between the two panes.
 	const showSplit = isWideLayout
-
-	// Row within each pane where the internal divider sits. Both TraceDetailsPane
-	// and SpanDetailPane header is: 1 (title) + 2 (info) + 1 (divider) = 4 rows
-	// → junction on row 3.
-	//
-	// At L0/L1 the left pane is the TraceList (no internal divider at row 3),
-	// so the separator only needs to connect to the right pane (`├`). At L2
-	// both panes have a divider at row 3, so we need a full cross (`┼`).
-	const separatorJunctionChars = useMemo(() => {
-		const m = new Map<number, string>()
-		m.set(3, viewLevel === 2 ? "\u253c" : "\u251c")
-		return m
-	}, [viewLevel])
 
 	return (
 		<box flexGrow={1} flexDirection="column">
 			<box paddingLeft={1} paddingRight={1} flexDirection="column">
-			<TextLine>
-				<span fg={colors.muted} attributes={TextAttributes.BOLD}>MOTEL</span>
-				<span fg={colors.separator}>{" · "}</span>
-				<span fg={colors.muted}>{headerServiceLabel}</span>
-				<span fg={colors.muted}>{" ".repeat(headerGap)}</span>
-				<span fg={colors.muted} attributes={TextAttributes.BOLD}>{headerRight}</span>
-			</TextLine>
+				<TextLine>
+					<span fg={colors.muted} attributes={TextAttributes.BOLD}>MOTEL</span>
+					<span fg={colors.separator}>{SEPARATOR}</span>
+					<span fg={colors.muted}>{headerServiceLabel}</span>
+					<span fg={colors.muted}>{" ".repeat(headerGap)}</span>
+					<span fg={colors.muted} attributes={TextAttributes.BOLD}>{headerRight}</span>
+				</TextLine>
 			</box>
 			{showSplit
-				? <SplitDivider leftWidth={leftPaneWidth} junction={"\u252c"} rightWidth={rightPaneWidth} />
+				? <SplitDivider leftWidth={leftPaneWidth} junction={"┬"} rightWidth={rightPaneWidth} />
 				: <Divider width={contentWidth} />}
 			<TraceWorkspace
 				layout={layout}
@@ -596,7 +194,7 @@ export const App = () => {
 			{footerHeight > 0 ? (
 				<>
 					{showSplit
-						? <SplitDivider leftWidth={leftPaneWidth} junction={"\u2534"} rightWidth={rightPaneWidth} />
+						? <SplitDivider leftWidth={leftPaneWidth} junction={"┴"} rightWidth={rightPaneWidth} />
 						: <Divider width={contentWidth} />}
 					<box paddingLeft={1} paddingRight={1} flexDirection="column" height={footerHeight}>
 						{visibleFooterNotice ? (
