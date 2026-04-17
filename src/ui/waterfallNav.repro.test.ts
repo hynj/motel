@@ -54,9 +54,16 @@ const press = async (...keys: string[]) => {
 	await Bun.sleep(120)
 }
 
-// Slice out just the waterfall body region from a snapshot. We isolate the
-// content between the trace meta divider and the bottom divider so cosmetic
-// header differences (timestamps, age "1m" vs "2m") don't confuse the diff.
+// Slice out just the waterfall body region from a snapshot. The waterfall
+// always sits between the last two horizontal dividers (the one just below
+// the trace meta / pane header, and the one above the footer). Using the
+// *last* pair makes the helper robust to layout changes that add or remove
+// header dividers (breadcrumbs, split-divider junctions, etc.).
+//
+// In wide (side-by-side) mode each line also contains the trace list on the
+// left half separated by `│`. The list renders relative ages like "6s / 7s"
+// that drift between snapshots; strip everything left of the first `│` so
+// only the waterfall contributes to the comparison.
 const waterfallBody = (snap: string): readonly string[] => {
 	const lines = snap.split("\n")
 	const dividerIdxs: number[] = []
@@ -64,9 +71,13 @@ const waterfallBody = (snap: string): readonly string[] => {
 		if (lines[i]!.startsWith("─")) dividerIdxs.push(i)
 	}
 	if (dividerIdxs.length < 2) return []
-	const start = dividerIdxs[1]! + 1
-	const end = dividerIdxs[2] ?? lines.length
-	return lines.slice(start, end).map((line) => line.replace(/\s+$/g, ""))
+	const start = dividerIdxs[dividerIdxs.length - 2]! + 1
+	const end = dividerIdxs[dividerIdxs.length - 1]!
+	return lines.slice(start, end).map((line) => {
+		const barIdx = line.indexOf("\u2502")
+		const sliced = barIdx >= 0 ? line.slice(barIdx) : line
+		return sliced.replace(/\s+$/g, "")
+	})
 }
 
 // ---------------------------------------------------------------------------

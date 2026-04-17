@@ -92,7 +92,6 @@ const renderWaterfallBar = (
 	barWidth: number,
 	barColor: string,
 	laneColor: string,
-	laneDotColor: string,
 ): { readonly segments: readonly WaterfallBarSegment[]; readonly afterCells: number } => {
 	if (barWidth < 3 || trace.durationMs === 0) {
 		return {
@@ -116,7 +115,7 @@ const renderWaterfallBar = (
 	const segments: WaterfallBarSegment[] = []
 
 	if (startCell > 0) {
-		segments.push({ text: "\u00b7".repeat(startCell), fg: laneDotColor })
+		segments.push({ text: " ".repeat(startCell), fg: laneColor, bg: laneColor })
 	}
 
 	if (startCell === endCell) {
@@ -234,8 +233,7 @@ const WaterfallRow = memo(({
 	const isError = span.status === "error"
 	const barColor = selected ? (isError ? waterfallColors.barSelectedError : waterfallColors.barSelected) : isError ? waterfallColors.barError : waterfallColors.bar
 	const laneColor = waterfallColors.barBg
-	const laneDotColor = waterfallColors.barLane
-	const { segments, afterCells } = renderWaterfallBar(span, trace, barWidth, barColor, laneColor, laneDotColor)
+	const { segments, afterCells } = renderWaterfallBar(span, trace, barWidth, barColor, laneColor)
 	const bg = selected ? colors.selectedBg : undefined
 	const treeColor = selected ? colors.separator : colors.treeLine
 	const indicatorColor = isError ? colors.error : hasChildSpans ? (selected ? colors.selectedText : colors.muted) : colors.passing

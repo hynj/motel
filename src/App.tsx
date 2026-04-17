@@ -35,6 +35,7 @@ import {
 	traceDetailStateAtom,
 	traceStateAtom,
 } from "./ui/state.ts"
+import { SpanDetailPane } from "./ui/SpanDetailPane.tsx"
 import { colors, SEPARATOR } from "./ui/theme.ts"
 import { TraceDetailsPane } from "./ui/TraceDetailsPane.tsx"
 import { getVisibleSpans } from "./ui/Waterfall.tsx"
@@ -63,7 +64,9 @@ export const App = () => {
 
 	// Layout calculations
 	const contentWidth = Math.max(60, width ?? 100)
-	const isWideLayout = (width ?? 100) >= 140
+	// Lazygit-style: side-by-side for anything remotely wide; vertical stack only
+	// when the terminal is truly narrow.
+	const isWideLayout = (width ?? 100) >= 100
 	const splitGap = 1
 	const sectionPadding = 1
 	const traceListHeaderHeight = 1
@@ -72,18 +75,29 @@ export const App = () => {
 	const footerFrameHeight = footerHeight > 0 ? 1 + footerHeight : 0
 	const frameHeight = 1 + 1 + footerFrameHeight
 	const availableContentHeight = Math.max(10, (height ?? 24) - frameHeight)
-	const leftPaneWidth = isWideLayout ? Math.max(44, Math.floor((contentWidth - splitGap) * 0.38)) : contentWidth
+	// Level 2 (span detail focused) rebalances the split so the waterfall
+	// context on the left has more room to breathe — otherwise the bars and
+	// labels get aggressively truncated in the narrow 40% slice.
+	const viewLevelForLayout: 0 | 1 | 2 =
+		detailView === "span-detail" ? 2 :
+		selectedSpanIndex !== null ? 1 :
+		0
+	const splitRatio = viewLevelForLayout === 2 ? 0.5 : 0.4
+	const leftPaneWidth = isWideLayout ? Math.max(40, Math.floor((contentWidth - splitGap) * splitRatio)) : contentWidth
 	const rightPaneWidth = isWideLayout ? Math.max(28, contentWidth - leftPaneWidth - splitGap) : contentWidth
-	
+
 	const leftContentWidth = isWideLayout ? Math.max(24, leftPaneWidth - 3) : Math.max(24, contentWidth - sectionPadding * 2)
 	const rightContentWidth = isWideLayout ? Math.max(24, rightPaneWidth - sectionPadding * 2) : Math.max(24, contentWidth - sectionPadding * 2)
 	const headerFooterWidth = Math.max(24, contentWidth - 2)
 	const wideBodyHeight = availableContentHeight
 	const wideBodyLines = Math.max(8, wideBodyHeight - 5)
+	// Narrow: each drill-in level gets the full body (minus a 1-line breadcrumb
+	// on L1/L2). At L0 we keep today's stacked list + details layout.
 	const narrowSplitHeight = Math.max(10, availableContentHeight - 1)
 	const narrowListHeight = Math.max(4, Math.min(10, Math.floor(narrowSplitHeight * 0.4), narrowSplitHeight - 9))
 	const narrowDetailHeight = narrowSplitHeight - narrowListHeight
 	const narrowBodyLines = Math.max(2, narrowDetailHeight - 5)
+	const narrowFullBodyLines = Math.max(8, availableContentHeight - 6) // header(1) + breadcrumb(1) + divider(1) + details header(4) + footer divider
 	const wideTraceListBodyHeight = Math.max(1, wideBodyHeight - traceListHeaderHeight)
 	const narrowTraceListBodyHeight = Math.max(1, narrowListHeight - traceListHeaderHeight)
 	const traceViewportRows = isWideLayout ? wideTraceListBodyHeight : narrowTraceListBodyHeight
@@ -535,19 +549,23 @@ export const App = () => {
 		onSelectTrace: selectTraceById,
 	} as const), [filteredTraces, selectedTraceId, traceState.status, traceState.error, leftContentWidth, traceState.services, selectedTraceService, spanNavActive, filterText, traceSort, traceState.data.length, selectTraceById])
 
-	// When in span nav mode on wide layout, expand trace detail to full width
-	const expandedTraceView = isWideLayout && spanNavActive
-	// In expanded trace view, TraceDetailsPane renders its own bottom divider that
-	// connects into the footer, so the body gets one extra usable row versus the
-	// normal app-level footer divider layout.
-	const fullBodyLines = Math.max(8, availableContentHeight - 4)
-	const fullContentWidth = Math.max(24, contentWidth - sectionPadding * 2)
+	// Drill-in state machine:
+	//   level 0: trace list focused
+	//   level 1: span nav (waterfall focused)
+	//   level 2: span detail focused
+	const viewLevel = viewLevelForLayout
+	const filteredSpansApp = selectedTrace ? getVisibleSpans(selectedTrace.spans, collapsedSpanIds) : []
+	const selectedSpan = selectedSpanIndex !== null ? filteredSpansApp[selectedSpanIndex] ?? null : null
+	const selectedSpanLogs = useMemo(
+		() => selectedSpan ? logState.data.filter((log) => log.spanId === selectedSpan.spanId) : [],
+		[selectedSpan, logState.data],
+	)
 
-	// Show split layout with vertical separator (not in expanded or narrow mode)
-	const showSplit = isWideLayout && !expandedTraceView
+	// Wide layout: whether to show a split separator between the two panes.
+	const showSplit = isWideLayout
 
 	// Row within the right pane where the internal divider sits.
-	// TraceDetailsPane header is: 1 (title) + 2 (info) + 1 (divider) = 4 rows → junction on row 3.
+	// Both TraceDetailsPane and SpanDetailPane header is: 1 (title) + 2 (info) + 1 (divider) = 4 rows → junction on row 3.
 	const separatorJunctionRows = useMemo(() => new Set([3]), [])
 
 	return (
@@ -587,25 +605,71 @@ export const App = () => {
 						bodyLines={Math.max(8, availableContentHeight - 3)}
 					/>
 				</box>
-			) : expandedTraceView ? (
-				<box flexGrow={1} flexDirection="column">
-					<TraceDetailsPane trace={selectedTrace} traceSummary={selectedTraceSummary} traceStatus={traceDetailState.status} traceError={traceDetailState.error} traceLogsState={logState} contentWidth={fullContentWidth} bodyLines={fullBodyLines} paneWidth={contentWidth} selectedSpanIndex={selectedSpanIndex} collapsedSpanIds={collapsedSpanIds} detailView={detailView} focused={spanNavActive} onSelectSpan={selectSpan} showBottomDivider={footerHeight > 0} />
-				</box>
 			) : isWideLayout ? (
+				/* WIDE LAYOUT. Drill-in slides right:
+				 *   L0: [list focused]  | [waterfall preview]
+				 *   L1: [list context]  | [waterfall focused]
+				 *   L2: [waterfall ctx] | [span-detail focused]
+				 */
 				<box flexGrow={1} flexDirection="row">
 					<box width={leftPaneWidth} height={wideBodyHeight} flexDirection="column" paddingLeft={sectionPadding} paddingRight={sectionPadding}>
-						<TraceList showHeader {...traceListProps} />
-						{filterMode ? <FilterBar text={filterText} width={leftContentWidth} /> : null}
-						<scrollbox ref={traceListScrollRef} height={filterMode ? wideTraceListBodyHeight - 1 : wideTraceListBodyHeight} flexGrow={0}>
-							<TraceList showHeader={false} {...traceListProps} />
-						</scrollbox>
+						{viewLevel <= 1 ? (
+							<>
+								<TraceList showHeader {...traceListProps} />
+								{filterMode ? <FilterBar text={filterText} width={leftContentWidth} /> : null}
+								<scrollbox ref={traceListScrollRef} height={filterMode ? wideTraceListBodyHeight - 1 : wideTraceListBodyHeight} flexGrow={0}>
+									<TraceList showHeader={false} {...traceListProps} />
+								</scrollbox>
+							</>
+						) : (
+							<TraceDetailsPane
+								trace={selectedTrace}
+								traceSummary={selectedTraceSummary}
+								traceStatus={traceDetailState.status}
+								traceError={traceDetailState.error}
+								traceLogsState={logState}
+								contentWidth={leftContentWidth}
+								bodyLines={wideBodyLines}
+								paneWidth={leftPaneWidth}
+								selectedSpanIndex={selectedSpanIndex}
+								collapsedSpanIds={collapsedSpanIds}
+								focused={false}
+								onSelectSpan={selectSpan}
+							/>
+						)}
 					</box>
 					<SeparatorColumn height={wideBodyHeight} junctionRows={separatorJunctionRows} />
 					<box width={rightPaneWidth} height={wideBodyHeight} flexDirection="column">
-						<TraceDetailsPane trace={selectedTrace} traceSummary={selectedTraceSummary} traceStatus={traceDetailState.status} traceError={traceDetailState.error} traceLogsState={logState} contentWidth={rightContentWidth} bodyLines={wideBodyLines} paneWidth={rightPaneWidth} selectedSpanIndex={selectedSpanIndex} collapsedSpanIds={collapsedSpanIds} detailView={detailView} focused={spanNavActive} onSelectSpan={selectSpan} />
+						{viewLevel <= 1 ? (
+							<TraceDetailsPane
+								trace={selectedTrace}
+								traceSummary={selectedTraceSummary}
+								traceStatus={traceDetailState.status}
+								traceError={traceDetailState.error}
+								traceLogsState={logState}
+								contentWidth={rightContentWidth}
+								bodyLines={wideBodyLines}
+								paneWidth={rightPaneWidth}
+								selectedSpanIndex={selectedSpanIndex}
+								collapsedSpanIds={collapsedSpanIds}
+								focused={viewLevel === 1}
+								onSelectSpan={selectSpan}
+							/>
+						) : (
+							<SpanDetailPane
+								span={selectedSpan}
+								trace={selectedTrace}
+								logs={selectedSpanLogs}
+								contentWidth={rightContentWidth}
+								bodyLines={wideBodyLines}
+								paneWidth={rightPaneWidth}
+								focused={true}
+							/>
+						)}
 					</box>
 				</box>
-			) : (
+			) : viewLevel === 0 ? (
+				/* NARROW L0: list on top, trace details below. */
 				<>
 					<box height={narrowListHeight} flexDirection="column" paddingLeft={sectionPadding} paddingRight={sectionPadding}>
 						<TraceList showHeader {...traceListProps} />
@@ -615,16 +679,75 @@ export const App = () => {
 						</scrollbox>
 					</box>
 					<Divider width={contentWidth} />
-					<TraceDetailsPane trace={selectedTrace} traceSummary={selectedTraceSummary} traceStatus={traceDetailState.status} traceError={traceDetailState.error} traceLogsState={logState} contentWidth={rightContentWidth} bodyLines={narrowBodyLines} paneWidth={contentWidth} selectedSpanIndex={selectedSpanIndex} collapsedSpanIds={collapsedSpanIds} detailView={detailView} focused={spanNavActive} onSelectSpan={selectSpan} />
+					<TraceDetailsPane
+						trace={selectedTrace}
+						traceSummary={selectedTraceSummary}
+						traceStatus={traceDetailState.status}
+						traceError={traceDetailState.error}
+						traceLogsState={logState}
+						contentWidth={rightContentWidth}
+						bodyLines={narrowBodyLines}
+						paneWidth={contentWidth}
+						selectedSpanIndex={selectedSpanIndex}
+						collapsedSpanIds={collapsedSpanIds}
+						focused={false}
+						onSelectSpan={selectSpan}
+					/>
+				</>
+			) : (
+				/* NARROW L1/L2: 1-line breadcrumb + full-body pane. */
+				<>
+					<box paddingLeft={1} paddingRight={1} height={1} flexDirection="column">
+						<TextLine>
+							<span fg={colors.muted}>TRACES</span>
+							{selectedTraceSummary ? (
+								<>
+									<span fg={colors.separator}>{"  "}{SEPARATOR}{"  "}</span>
+									<span fg={viewLevel === 1 ? colors.accent : colors.muted}>{selectedTraceSummary.rootOperationName}</span>
+								</>
+							) : null}
+							{viewLevel === 2 && selectedSpan ? (
+								<>
+									<span fg={colors.separator}>{"  "}{SEPARATOR}{"  "}</span>
+									<span fg={colors.accent}>{selectedSpan.operationName}</span>
+								</>
+							) : null}
+						</TextLine>
+					</box>
+					<Divider width={contentWidth} />
+					{viewLevel === 1 ? (
+						<TraceDetailsPane
+							trace={selectedTrace}
+							traceSummary={selectedTraceSummary}
+							traceStatus={traceDetailState.status}
+							traceError={traceDetailState.error}
+							traceLogsState={logState}
+							contentWidth={rightContentWidth}
+							bodyLines={narrowFullBodyLines}
+							paneWidth={contentWidth}
+							selectedSpanIndex={selectedSpanIndex}
+							collapsedSpanIds={collapsedSpanIds}
+							focused={true}
+							onSelectSpan={selectSpan}
+						/>
+					) : (
+						<SpanDetailPane
+							span={selectedSpan}
+							trace={selectedTrace}
+							logs={selectedSpanLogs}
+							contentWidth={rightContentWidth}
+							bodyLines={narrowFullBodyLines}
+							paneWidth={contentWidth}
+							focused={true}
+						/>
+					)}
 				</>
 			)}
 			{footerHeight > 0 ? (
 				<>
-					{expandedTraceView
-					? null
-					: showSplit
-					? <SplitDivider leftWidth={leftPaneWidth} junction={"\u2534"} rightWidth={rightPaneWidth} />
-					: <Divider width={contentWidth} />}
+					{showSplit
+						? <SplitDivider leftWidth={leftPaneWidth} junction={"\u2534"} rightWidth={rightPaneWidth} />
+						: <Divider width={contentWidth} />}
 					<box paddingLeft={1} paddingRight={1} flexDirection="column" height={footerHeight}>
 						{visibleFooterNotice ? (
 							<PlainLine text={visibleFooterNotice} fg={colors.count} />
