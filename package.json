@@ -1,5 +1,5 @@
 {
-  "name": "motel",
+  "name": "@kitlangton/motel",
   "version": "0.1.0",
   "description": "A local OpenTelemetry ingest + TUI viewer for development, backed by SQLite.",
   "type": "module",
