@@ -1,6 +1,6 @@
 import { promises as fs } from "node:fs"
 import path from "node:path"
-import { Effect, Layer, ServiceMap } from "effect"
+import { Effect, Layer, Context } from "effect"
 import { config, parsePositiveInt, resolveOtelUrl } from "./config.js"
 import { HttpApiBuilder, HttpApiScalar } from "effect/unstable/httpapi"
 import * as HttpRouter from "effect/unstable/http/HttpRouter"
@@ -594,6 +594,59 @@ const ApiLive = Layer.provideMerge(
 	TelemetryStoreLive,
 )
 
+// ---------------------------------------------------------------------------
+// Static file serving for the web UI
+// ---------------------------------------------------------------------------
+
+const WEB_DIST_DIR = path.resolve(import.meta.dir, "../web/dist")
+// Only cache `true` — a `false` result is rechecked so a later `web:build` is picked up
+let webUiAvailable = false
+
+const isWebUiAvailable = async (): Promise<boolean> => {
+	if (webUiAvailable) return true
+	try {
+		webUiAvailable = await Bun.file(path.join(WEB_DIST_DIR, "index.html")).exists()
+	} catch {
+		/* ignore */
+	}
+	return webUiAvailable
+}
+
+/** Routes that must always go through the Effect API handler */
+const isStrictApiRoute = (pathname: string) =>
+	pathname.startsWith("/api/") ||
+	pathname.startsWith("/v1/") ||
+	pathname === "/openapi.json" ||
+	pathname === "/docs"
+
+const serveWebUi = async (request: Request, apiHandler: (req: Request) => Promise<Response>): Promise<Response> => {
+	const url = new URL(request.url)
+	const pathname = url.pathname
+
+	// Strict API routes always go through the Effect handler
+	if (isStrictApiRoute(pathname)) return apiHandler(request)
+
+	// Only serve web UI if built
+	if (!(await isWebUiAvailable())) return apiHandler(request)
+
+	// Try to serve a static file from web/dist/ (hashed assets, favicon, etc.)
+	if (pathname.startsWith("/assets/") || (pathname !== "/" && pathname.includes("."))) {
+		const resolved = path.resolve(WEB_DIST_DIR, pathname.slice(1))
+		if (resolved.startsWith(WEB_DIST_DIR) && await Bun.file(resolved).exists()) {
+			return new Response(Bun.file(resolved))
+		}
+	}
+
+	// SPA fallback: serve index.html for / and all client routes
+	return new Response(Bun.file(path.join(WEB_DIST_DIR, "index.html")), {
+		headers: { "content-type": "text/html; charset=utf-8" },
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Server lifecycle
+// ---------------------------------------------------------------------------
+
 export const startLocalServer = async () => {
 	if (server) return server
 	const { handler, dispose } = HttpRouter.toWebHandler(ApiLive, { disableLogger: true })
@@ -602,7 +655,7 @@ export const startLocalServer = async () => {
 		hostname: config.otel.host,
 		port: config.otel.port,
 		fetch(request) {
-			return handler(request)
+			return serveWebUi(request, handler)
 		},
 	})
 	startedAt = new Date().toISOString()

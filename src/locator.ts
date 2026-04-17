@@ -1,4 +1,4 @@
-import { Effect, Layer, Ref, ServiceMap } from "effect"
+import { Effect, Layer, Ref, Context } from "effect"
 import { listAliveEntries, MOTEL_SERVICE_ID, type RegistryEntry } from "./registry.js"
 
 export class LocatorError extends Error {
@@ -112,7 +112,7 @@ const discover = Effect.fn("Locator.discover")(function* () {
 	}
 })
 
-export class Locator extends ServiceMap.Service<
+export class Locator extends Context.Service<
 	Locator,
 	{
 		readonly resolve: Effect.Effect<Resolved, LocatorError>

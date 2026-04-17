@@ -19,6 +19,8 @@
 - Query logs for one span: `bun run cli span-logs <span-id>`
 - Query facets via CLI: `bun run cli facets <traces|logs> <field>`
 - Print Effect setup instructions: `bun run instructions`
+- Build the web UI: `bun run web:build`
+- Dev the web UI (with hot reload): `bun run web:dev`
 - Typecheck: `bun run typecheck`
 
 ## Verification
@@ -49,6 +51,11 @@
 - `src/services/TraceQueryService.ts` reads traces from the local store.
 - `src/services/LogQueryService.ts` reads logs from the local store.
 - `src/config.ts` is the source of truth for ports and env-driven OTEL settings.
+- `web/` is a Vite + React SPA for the browser-based UI (Tailwind CSS, `@effect/atom-react`, `AtomHttpApi`).
+- `web/src/api.ts` creates the typed `AtomHttpApi.Service` client from `src/httpApi.ts`.
+- `web/src/pages/` contains route pages: TracesPage, TraceDetailPage, LogsPage, AiCallsPage.
+- `web/src/components/` contains Waterfall and SpanDetail components.
+- The server in `src/localServer.ts` serves `web/dist/` as static files with SPA fallback for non-API routes.
 
 ## Effect Observability Guidance
 - Inspect the target repo’s existing Effect runtime and observability wiring before adding anything new.

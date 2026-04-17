@@ -1,8 +1,8 @@
-import { Effect, Layer, ServiceMap } from "effect"
+import { Effect, Layer, Context } from "effect"
 import type { SpanItem, TraceItem, TraceSummaryItem } from "../domain.js"
 import { TelemetryStore } from "./TelemetryStore.js"
 
-export class TraceQueryService extends ServiceMap.Service<
+export class TraceQueryService extends Context.Service<
 	TraceQueryService,
 	{
 		readonly listServices: Effect.Effect<readonly string[], Error>

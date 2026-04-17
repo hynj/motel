@@ -3,7 +3,7 @@ import { useKeyboard } from "@opentui/react"
 import { useLayoutEffect, useRef } from "react"
 import type { TraceItem, TraceSummaryItem } from "../domain.ts"
 import { otelServerInstructions } from "../instructions.ts"
-import { copyToClipboard, traceUiUrl } from "./format.ts"
+import { copyToClipboard, traceUiUrl, webUiUrl } from "./format.ts"
 import {
 	autoRefreshAtom,
 	collapsedSpanIdsAtom,
@@ -427,7 +427,7 @@ export const useKeyboardNav = (params: KeyboardNavParams) => {
 			}
 			return
 		}
-		if (key.name === "o") {
+		if (key.name === "o" && !key.shift) {
 			if (s.serviceLogNavActive) {
 				const selectedLog = s.serviceLogState.data[s.selectedServiceLogIndex]
 				if (selectedLog?.traceId) {
@@ -439,6 +439,11 @@ export const useKeyboardNav = (params: KeyboardNavParams) => {
 			if (!s.selectedTrace) return
 			void Bun.spawn({ cmd: ["open", traceUiUrl(s.selectedTrace.traceId)], stdout: "ignore", stderr: "ignore" })
 			s.flashNotice(`Opened trace ${s.selectedTrace.traceId.slice(-8)}`)
+			return
+		}
+		if (key.name === "o" && key.shift) {
+			void Bun.spawn({ cmd: ["open", webUiUrl()], stdout: "ignore", stderr: "ignore" })
+			s.flashNotice("Opened web UI")
 			return
 		}
 		if (key.name === "c" || key.name === "C") {

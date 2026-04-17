@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite"
 import { mkdirSync } from "node:fs"
 import { dirname } from "node:path"
-import { Clock, Effect, Layer, Schedule, ServiceMap } from "effect"
+import { Clock, Effect, Layer, Schedule, Context } from "effect"
 import { config } from "../config.js"
 import type { AiCallDetail, AiCallSummary, FacetItem, LogItem, SpanItem, StatsItem, TraceItem, TraceSummaryItem, TraceSpanEvent, TraceSpanItem } from "../domain.js"
 import { AI_ATTR_MAP, AI_TEXT_SEARCH_KEYS, truncatePreview } from "../domain.js"
@@ -363,7 +363,7 @@ const buildContainsAttributeMatchSubquery = (
 	}
 }
 
-export class TelemetryStore extends ServiceMap.Service<
+export class TelemetryStore extends Context.Service<
 	TelemetryStore,
 	{
 		readonly ingestTraces: (payload: OtlpTraceExportRequest) => Effect.Effect<{ readonly insertedSpans: number }, Error>

@@ -159,9 +159,12 @@ const WaterfallRow = memo(({
 	onSelect: () => void
 }) => {
 	const prefix = buildTreePrefix(spans, index)
-	const indicator = span.status === "error" ? "!" : hasChildSpans ? (collapsed ? "\u25b8" : "\u25be") : "\u00b7"
+	// Drop the redundant `·` bullet on leaf rows — the tree lines carry the hierarchy.
+	// Only show error marker or chevron for collapsible parent spans.
+	const indicator = span.status === "error" ? "!" : hasChildSpans ? (collapsed ? "\u25b8" : "\u25be") : " "
 	const opName = span.isRunning ? `${span.operationName} [${lifecycleLabel(span)}]` : span.operationName
-	const duration = formatDuration(span.durationMs)
+	// Hide sub-millisecond duration labels — zero useful info for rows that all read "0.00ms"
+	const duration = span.durationMs >= 1 ? formatDuration(span.durationMs) : ""
 	const logText = logCount > 0 ? `${logCount}lg` : ""
 
 	const { labelMaxWidth, durationWidth, logWidth, barWidth } = getWaterfallLayout(contentWidth, trace.durationMs)
@@ -179,6 +182,16 @@ const WaterfallRow = memo(({
 	const indicatorColor = isError ? colors.error : selected ? colors.passing : colors.muted
 	const opColor = selected ? colors.selectedText : span.isRunning ? colors.warning : colors.text
 
+	// Place duration immediately after the bar (not at a fixed right-aligned column).
+	// Fill the rest with transparent padding so the logText stays right-aligned.
+	const barStartIdx = before.length
+	const barEndIdx = barStartIdx + bar.length
+	// `after` is the remaining bar-column after the bar. We replace its prefix with
+	// the duration label so it sits flush to the bar end, then pad with spaces.
+	const durationStr = duration
+	const spaceAfterLen = Math.max(0, after.length - (durationStr ? durationStr.length + 1 : 0))
+	const durationGap = durationStr ? " " : ""
+
 	return (
 		<box id={id} height={1} onMouseDown={onSelect}>
 			<TextLine bg={bg}>
@@ -189,9 +202,9 @@ const WaterfallRow = memo(({
 				<span> </span>
 				<span fg={waterfallColors.barBg}>{before}</span>
 				<span fg={barColor}>{bar}</span>
-				<span fg={waterfallColors.barBg}>{after}</span>
-				<span> </span>
-				<span fg={selected ? colors.accent : colors.count}>{duration.padStart(durationWidth)}</span>
+				<span>{durationGap}</span>
+				<span fg={selected ? colors.accent : colors.count}>{durationStr}</span>
+				<span>{" ".repeat(spaceAfterLen)}</span>
 				<span>{" ".repeat(Math.max(0, logWidth - logText.length))}</span>
 				<span fg={logCount > 0 ? colors.defaultService : colors.muted}>{logText}</span>
 			</TextLine>

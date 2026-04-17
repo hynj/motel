@@ -92,6 +92,7 @@ export const relevantLogAttributes = (log: LogItem) =>
 	)
 
 export const traceUiUrl = (traceId: string) => resolveOtelUrl(`/trace/${traceId}`)
+export const webUiUrl = () => resolveOtelUrl(`/traces`)
 
 export const copyToClipboard = async (value: string) => {
 	const proc = Bun.spawn({

@@ -1,0 +1,14 @@
+{
+  "env": {
+    "OTEL_EXPORTER_OTLP_ENDPOINT": "http://127.0.0.1:27686"
+  },
+  "mcpServers": {
+    "motel": {
+      "command": "bun",
+      "args": ["run", "src/mcp.ts"],
+      "env": {
+        "NODE_ENV": "development"
+      }
+    }
+  }
+}

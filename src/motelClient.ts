@@ -1,4 +1,4 @@
-import { Effect, Layer, ServiceMap } from "effect"
+import { Effect, Layer, Context } from "effect"
 import { Locator } from "./locator.js"
 
 export class MotelHttpError extends Error {
@@ -84,7 +84,7 @@ export type FacetsInput = {
 	readonly limit?: number
 }
 
-export class MotelClient extends ServiceMap.Service<
+export class MotelClient extends Context.Service<
 	MotelClient,
 	{
 		readonly searchTraces: (input: SearchTracesInput) => Effect.Effect<unknown, MotelHttpError>

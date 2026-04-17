@@ -10,7 +10,7 @@
     "isolatedModules": true,
     "skipLibCheck": true,
     "noEmit": true,
-    "types": ["bun-types"],
+    "types": ["@types/bun"],
     "lib": ["ES2023", "DOM"],
     "allowSyntheticDefaultImports": true,
     "esModuleInterop": true,

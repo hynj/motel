@@ -1,8 +1,8 @@
-import { Effect, Layer, ServiceMap } from "effect"
+import { Effect, Layer, Context } from "effect"
 import type { LogItem } from "../domain.js"
 import { TelemetryStore } from "./TelemetryStore.js"
 
-export class LogQueryService extends ServiceMap.Service<
+export class LogQueryService extends Context.Service<
 	LogQueryService,
 	{
 		readonly listRecentLogs: (serviceName: string) => Effect.Effect<readonly LogItem[], Error>

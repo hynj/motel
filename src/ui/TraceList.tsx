@@ -38,7 +38,7 @@ const TraceRow = ({
 				<span fg={traceIndicatorColor(trace)}>{fitCell(traceIndicator(trace), stateWidth)}</span>
 				<span> </span>
 				<span fg={titleColor}>{fitCell(title, titleWidth)}</span>
-				<span fg={selected ? colors.accent : colors.count}>{fitCell(formatDuration(trace.durationMs), durationWidth, "right")}</span>
+				<span fg={selected ? colors.accent : colors.count}>{fitCell(trace.durationMs >= 1 ? formatDuration(trace.durationMs) : "", durationWidth, "right")}</span>
 				<span fg={colors.muted}>{fitCell(`${trace.spanCount}sp`, countWidth, "right")}</span>
 				<span fg={colors.muted}>{fitCell(relativeTime(trace.startedAt), ageWidth, "right")}</span>
 			</TextLine>
@@ -79,10 +79,13 @@ export const TraceList = ({
 		const filterLabel = filterText ? ` \u00b7 filter: ${filterText}` : ""
 		const sortLabel = sortMode && sortMode !== "recent" ? ` \u00b7 sort: ${sortMode}` : ""
 		const countLabel = totalCount !== undefined && totalCount !== traces.length ? ` (${traces.length}/${totalCount})` : ` (${traces.length})`
+		const serviceLabel = selectedService
+			? `svc: ${selectedService}${services.length > 1 ? ` (${services.length})` : ""}`
+			: "waiting for traces"
 		return (
 			<AlignedHeaderLine
 				left={`TRACES${countLabel}${filterLabel}${sortLabel}`}
-				right={`${selectedService ?? "waiting for traces"}${services.length > 1 ? ` \u00b7 ${services.length} svc` : ""}`}
+				right={serviceLabel}
 				width={contentWidth}
 			/>
 		)

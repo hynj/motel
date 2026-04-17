@@ -51,11 +51,27 @@ export const Divider = ({ width }: { width: number }) => (
 	<PlainLine text={"\u2500".repeat(Math.max(1, width))} fg={colors.separator} />
 )
 
-export const SeparatorColumn = ({ height }: { height: number }) => (
-	<box width={1} height={height} overflow="hidden">
-		<text fg={colors.separator}>{"\u2502\n".repeat(Math.max(1, height)).slice(0, -1)}</text>
+/** Horizontal divider split into left ─ junction ─ right, using flex row so
+ *  the junction character lands at exactly the same column as the SeparatorColumn. */
+export const SplitDivider = ({ leftWidth, junction, rightWidth }: { leftWidth: number; junction: string; rightWidth: number }) => (
+	<box flexDirection="row" height={1}>
+		<box width={leftWidth}><text fg={colors.separator} wrapMode="none" truncate>{"\u2500".repeat(leftWidth)}</text></box>
+		<box width={1}><text fg={colors.separator}>{junction}</text></box>
+		<box width={rightWidth}><text fg={colors.separator} wrapMode="none" truncate>{"\u2500".repeat(rightWidth)}</text></box>
 	</box>
 )
+
+export const SeparatorColumn = ({ height, junctionRows }: { height: number; junctionRows?: ReadonlySet<number> }) => {
+	const lines: string[] = []
+	for (let i = 0; i < Math.max(1, height); i++) {
+		lines.push(junctionRows?.has(i) ? "\u251c" : "\u2502")
+	}
+	return (
+		<box width={1} height={height} overflow="hidden">
+			<text fg={colors.separator}>{lines.join("\n")}</text>
+		</box>
+	)
+}
 
 export const FilterBar = ({ text, width }: { text: string; width: number }) => (
 	<TextLine fg={colors.accent}>
@@ -66,29 +82,46 @@ export const FilterBar = ({ text, width }: { text: string; width: number }) => (
 )
 
 export const FooterHints = ({ spanNavActive, detailView, autoRefresh, width }: { spanNavActive: boolean; detailView: DetailView; autoRefresh: boolean; width: number }) => {
-	const firstLine = "j/k move  ^n/^p traces  ^d/^u page"
-	const secondLine = [
-		detailView === "service-logs" ? "enter trace" : `enter ${spanNavActive && detailView === "waterfall" ? "detail" : "spans"}`,
-		spanNavActive ? `esc ${detailView === "span-detail" ? "back" : "traces"}` : null,
+	// Group keys by purpose; render as `group: keys  group: keys`.
+	// Only the most-used actions; `?` reveals the full list.
+	const enterAction = detailView === "service-logs"
+		? "trace"
+		: spanNavActive && detailView === "waterfall"
+			? "detail"
+			: "spans"
+	const escAction = spanNavActive
+		? (detailView === "span-detail" ? "back" : "traces")
+		: null
+
+	const nav = "j/k move  ^d/^u page"
+	const action = [
+		`\u21b5 ${enterAction}`,
+		escAction ? `esc ${escAction}` : null,
+		"tab logs",
+		"[/] svc",
+	].filter((x) => x !== null).join("  ")
+	const meta = [
 		"/ filter",
 		"s sort",
 		`a live:${autoRefresh ? "on" : "off"}`,
-		"tab logs",
-		"[/] svc",
 		"r refresh",
-		"o open",
-		"q quit",
-	]
-		.filter((segment) => segment !== null)
-		.join("  ")
+	].join("  ")
+	const go = "o open  O web  ? help  q quit"
 
 	return (
 		<box flexDirection="column">
 			<TextLine fg={colors.muted} bg={colors.footerBg}>
-				{fitCell(firstLine, width)}
+				<span fg={colors.separator}>nav </span>
+				<span>{nav}</span>
+				<span fg={colors.separator}>{"   \u2502   "}</span>
+				<span fg={colors.separator}>do </span>
+				<span>{fitCell(action, Math.max(0, width - (nav.length + 7 + 7 + 4)))}</span>
 			</TextLine>
 			<TextLine fg={colors.muted} bg={colors.footerBg}>
-				{fitCell(secondLine, width)}
+				<span fg={colors.separator}>view </span>
+				<span>{meta}</span>
+				<span fg={colors.separator}>{"   \u2502   "}</span>
+				<span>{fitCell(go, Math.max(0, width - (meta.length + 8 + 4)))}</span>
 			</TextLine>
 		</box>
 	)

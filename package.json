@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "type": "module",
   "private": true,
+  "workspaces": ["web"],
   "bin": {
     "motel": "src/motel.ts",
     "motel-mcp": "src/mcp.ts"
@@ -25,26 +26,30 @@
     "search-spans": "bun run src/cli.ts search-spans",
     "trace-stats": "bun run src/cli.ts trace-stats",
     "log-stats": "bun run src/cli.ts log-stats",
+    "web:dev": "cd web && npx vite",
+    "web:build": "cd web && npx vite build",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
-    "@types/bun": "1.3.8",
-    "@types/react": "^19.2.10",
-    "typescript": "^5.9.3"
+    "@types/bun": "^1.3.12",
+    "@types/react": "^19.2.14",
+    "typescript": "^6.0.2"
   },
   "dependencies": {
-    "@effect/atom-react": "^4.0.0-beta.43",
-    "@effect/opentelemetry": "^4.0.0-beta.43",
-    "@effect/platform-bun": "^4.0.0-beta.43",
+    "@effect/atom-react": "^4.0.0-beta.49",
+    "@effect/opentelemetry": "^4.0.0-beta.49",
+    "@effect/platform-bun": "^4.0.0-beta.49",
     "@opentelemetry/api": "^1.9.0",
     "@opentelemetry/exporter-logs-otlp-http": "^0.214.0",
     "@opentelemetry/exporter-trace-otlp-http": "^0.211.0",
     "@opentelemetry/sdk-logs": "^0.214.0",
+    "@opentelemetry/sdk-node": "^0.214.0",
     "@opentelemetry/sdk-trace-base": "^2.5.0",
-    "@opentui/core": "^0.1.77",
-    "@opentui/react": "^0.1.77",
-    "effect": "^4.0.0-beta.43",
-    "react": "^19.2.4",
+    "@opentelemetry/sdk-trace-node": "^2.6.1",
+    "@opentui/core": "^0.1.99",
+    "@opentui/react": "^0.1.99",
+    "effect": "^4.0.0-beta.49",
+    "react": "^19.2.5",
     "scheduler": "^0.27.0"
   }
 }
