@@ -1,7 +1,7 @@
 import { useAtom } from "@effect/atom-react"
 import { useKeyboard, useRenderer } from "@opentui/react"
 import { useEffect, useLayoutEffect, useRef } from "react"
-import type { TraceItem, TraceSummaryItem } from "../domain.ts"
+import { isAiSpan, type TraceItem, type TraceSummaryItem } from "../domain.ts"
 import { otelServerInstructions } from "../instructions.ts"
 import { copyToClipboard, traceUiUrl, webUiUrl } from "./format.ts"
 import {
@@ -12,6 +12,7 @@ import {
 	attrPickerInputAtom,
 	attrPickerModeAtom,
 	autoRefreshAtom,
+	chatScrollOffsetAtom,
 	collapsedSpanIdsAtom,
 	detailViewAtom,
 	filterModeAtom,
@@ -50,12 +51,17 @@ import { resolveCollapseStep } from "./waterfallNav.ts"
  * Returns `null` for non-printable events (function keys, modifiers, etc.)
  * so callers can skip them.
  */
-const extractPrintable = (key: {
+interface KeyboardKey {
 	readonly name: string
 	readonly sequence?: string
 	readonly ctrl: boolean
 	readonly meta: boolean
-}): string | null => {
+	readonly option?: boolean
+	readonly shift?: boolean
+	readonly repeated?: boolean
+}
+
+const extractPrintable = (key: KeyboardKey): string | null => {
 	if (key.ctrl || key.meta) return null
 	// Space arrives as `key.name === "space"` with a 1-char sequence. We
 	// handle it explicitly because the generic "length > 1" branch below
@@ -79,6 +85,9 @@ interface KeyboardNavParams {
 	spanPageSize: number
 	flashNotice: (message: string) => void
 }
+
+const findTraceIndexById = (traces: readonly TraceSummaryItem[], traceId: string | null) =>
+	traceId === null ? -1 : traces.findIndex((trace) => trace.traceId === traceId)
 
 export const useKeyboardNav = (params: KeyboardNavParams) => {
 	const {
@@ -116,6 +125,7 @@ export const useKeyboardNav = (params: KeyboardNavParams) => {
 	const [waterfallFilterMode, setWaterfallFilterMode] = useAtom(waterfallFilterModeAtom)
 	const [waterfallFilterText, setWaterfallFilterText] = useAtom(waterfallFilterTextAtom)
 	const [selectedAttrIndex, setSelectedAttrIndex] = useAtom(selectedAttrIndexAtom)
+	const [chatScrollOffset, setChatScrollOffset] = useAtom(chatScrollOffsetAtom)
 
 	const pendingGRef = useRef(false)
 	const pendingGTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -127,6 +137,15 @@ export const useKeyboardNav = (params: KeyboardNavParams) => {
 	// instead of the waterfall or trace list. Enter drilled us here from
 	// L1; esc drills back.
 	const attrNavActive = detailView === "span-detail" && selectedSpanIndex !== null
+	// L2 specialisation: when drilled into an AI-flagged span we render
+	// the chat transcript view instead of the attribute dump. j/k scroll
+	// the transcript by a line, ctrl-d/u page by half the viewport, y
+	// falls back to copying trace/span ids (the individual message
+	// copying can come later; line-level is rarely what you want).
+	const selectedSpanForAi = selectedTrace && selectedSpanIndex !== null
+		? getVisibleSpans(selectedTrace.spans, collapsedSpanIds)[selectedSpanIndex] ?? null
+		: null
+	const chatNavActive = attrNavActive && selectedSpanForAi !== null && isAiSpan(selectedSpanForAi.tags)
 
 	// Bracketed paste: when the terminal has bracketed paste enabled, opentui
 	// surfaces the full pasted text as a single "paste" event on keyInput.
@@ -166,12 +185,44 @@ export const useKeyboardNav = (params: KeyboardNavParams) => {
 		}
 	}, [renderer, setFilterText, setPickerInput, setPickerIndex])
 
-	const stateRef = useRef({ traceState, serviceLogState, selectedServiceLogIndex, selectedTheme, selectedTraceIndex, selectedSpanIndex, selectedTraceService, detailView, showHelp, collapsedSpanIds, spanNavActive, serviceLogNavActive, attrNavActive, selectedAttrIndex, filterMode, filterText, autoRefresh, traceSort, pickerMode, pickerInput, pickerIndex, attrFacets, activeAttrKey, activeAttrValue, waterfallFilterMode, waterfallFilterText, ...params })
+	const buildStateSnapshot = () => ({
+		traceState,
+		serviceLogState,
+		selectedServiceLogIndex,
+		selectedTheme,
+		selectedTraceIndex,
+		selectedSpanIndex,
+		selectedTraceService,
+		detailView,
+		showHelp,
+		collapsedSpanIds,
+		spanNavActive,
+		serviceLogNavActive,
+		attrNavActive,
+		chatNavActive,
+		selectedAttrIndex,
+		chatScrollOffset,
+		filterMode,
+		filterText,
+		autoRefresh,
+		traceSort,
+		pickerMode,
+		pickerInput,
+		pickerIndex,
+		attrFacets,
+		activeAttrKey,
+		activeAttrValue,
+		waterfallFilterMode,
+		waterfallFilterText,
+		...params,
+	})
+
+	const stateRef = useRef(buildStateSnapshot())
 	// Keep the keyboard handler's state mirror in sync before the next paint.
 	// OpenTUI's own effect-event helper uses useLayoutEffect for this same reason:
 	// rapid repeated keypresses can otherwise observe stale selection state.
 	useLayoutEffect(() => {
-		stateRef.current = { traceState, serviceLogState, selectedServiceLogIndex, selectedTheme, selectedTraceIndex, selectedSpanIndex, selectedTraceService, detailView, showHelp, collapsedSpanIds, spanNavActive, serviceLogNavActive, attrNavActive, selectedAttrIndex, filterMode, filterText, autoRefresh, traceSort, pickerMode, pickerInput, pickerIndex, attrFacets, activeAttrKey, activeAttrValue, waterfallFilterMode, waterfallFilterText, ...params }
+		stateRef.current = buildStateSnapshot()
 	})
 
 	const clearPendingG = () => {
@@ -193,30 +244,96 @@ export const useKeyboardNav = (params: KeyboardNavParams) => {
 
 	const $ = () => stateRef.current
 
+	const resetPicker = () => {
+		setPickerInput("")
+		setPickerIndex(0)
+	}
+
+	const closePicker = () => {
+		setPickerMode("off")
+		resetPicker()
+	}
+
+	const getVisibleSelectedSpans = () => {
+		const s = $()
+		return s.selectedTrace ? getVisibleSpans(s.selectedTrace.spans, s.collapsedSpanIds) : []
+	}
+
+	const getSelectedVisibleSpan = () => {
+		const s = $()
+		if (s.selectedSpanIndex === null) return null
+		return getVisibleSelectedSpans()[s.selectedSpanIndex] ?? null
+	}
+
 	const selectFilteredTraceAt = (filteredIdx: number) => {
 		const s = $()
 		const trace = s.filteredTraces[filteredIdx]
 		if (!trace) return
-		const fullIndex = s.traceState.data.findIndex((t) => t.traceId === trace.traceId)
+		const fullIndex = findTraceIndexById(s.traceState.data, trace.traceId)
 		if (fullIndex >= 0) setSelectedTraceIndex(fullIndex)
 	}
 
-	const attrCountForSelectedSpan = () => {
+	const currentFilteredTraceIndex = () => {
 		const s = $()
-		if (!s.selectedTrace || s.selectedSpanIndex === null) return 0
-		const visible = getVisibleSpans(s.selectedTrace.spans, s.collapsedSpanIds)
-		const span = visible[s.selectedSpanIndex]
+		const selectedTraceId = s.traceState.data[s.selectedTraceIndex]?.traceId ?? null
+		return findTraceIndexById(s.filteredTraces, selectedTraceId)
+	}
+
+	const attrCountForSelectedSpan = () => {
+		const span = getSelectedVisibleSpan()
 		return span ? Object.keys(span.tags).length : 0
+	}
+
+	const moveTraceBy = (delta: number) => {
+		const s = $()
+		if (s.filteredTraces.length === 0) return
+		const currentIndex = currentFilteredTraceIndex()
+		const nextIndex = currentIndex < 0
+			? 0
+			: Math.max(0, Math.min(currentIndex + delta, s.filteredTraces.length - 1))
+		selectFilteredTraceAt(nextIndex)
+	}
+
+	const moveServiceLogBy = (delta: number) => {
+		const s = $()
+		if (s.serviceLogState.data.length === 0) {
+			setSelectedServiceLogIndex(0)
+			return
+		}
+		setSelectedServiceLogIndex(Math.max(0, Math.min(s.selectedServiceLogIndex + delta, s.serviceLogState.data.length - 1)))
+	}
+
+	const moveSpanBy = (delta: number) => {
+		const s = $()
+		if (!s.selectedTrace) return
+		const visibleCount = getVisibleSelectedSpans().length
+		if (visibleCount === 0) {
+			setSelectedSpanIndex(null)
+			return
+		}
+		const current = s.selectedSpanIndex ?? 0
+		setSelectedSpanIndex(Math.max(0, Math.min(current + delta, visibleCount - 1)))
+	}
+
+	const moveAttrBy = (delta: number) => {
+		const count = attrCountForSelectedSpan()
+		if (count === 0) return
+		const s = $()
+		setSelectedAttrIndex(Math.max(0, Math.min(s.selectedAttrIndex + delta, count - 1)))
 	}
 
 	const jumpToStart = () => {
 		const s = $()
+		if (s.chatNavActive) {
+			setChatScrollOffset(0)
+			return
+		}
 		if (s.attrNavActive) {
 			setSelectedAttrIndex(0)
 			return
 		}
 		if (s.spanNavActive && s.selectedTrace) {
-			const visibleCount = getVisibleSpans(s.selectedTrace.spans, s.collapsedSpanIds).length
+			const visibleCount = getVisibleSelectedSpans().length
 			setSelectedSpanIndex(visibleCount === 0 ? null : 0)
 		} else {
 			selectFilteredTraceAt(0)
@@ -225,48 +342,22 @@ export const useKeyboardNav = (params: KeyboardNavParams) => {
 
 	const jumpToEnd = () => {
 		const s = $()
+		if (s.chatNavActive) {
+			// Oversize jump; AiChatView clamps to its actual lines length.
+			setChatScrollOffset(999_999)
+			return
+		}
 		if (s.attrNavActive) {
 			const count = attrCountForSelectedSpan()
 			setSelectedAttrIndex(Math.max(0, count - 1))
 			return
 		}
 		if (s.spanNavActive && s.selectedTrace) {
-			const visibleCount = getVisibleSpans(s.selectedTrace.spans, s.collapsedSpanIds).length
+			const visibleCount = getVisibleSelectedSpans().length
 			setSelectedSpanIndex(visibleCount === 0 ? null : visibleCount - 1)
 		} else {
 			selectFilteredTraceAt(s.filteredTraces.length - 1)
 		}
-	}
-
-	const moveTraceBy = (direction: -1 | 1) => {
-		const s = $()
-		const filtered = s.filteredTraces
-		if (filtered.length === 0) return
-		setSelectedTraceIndex((current) => {
-			const currentTraceId = s.traceState.data[current]?.traceId
-			const currentFilteredIdx = currentTraceId
-				? filtered.findIndex((t) => t.traceId === currentTraceId)
-				: -1
-			if (currentFilteredIdx < 0) {
-				const fallbackTrace = filtered[0]
-				if (!fallbackTrace) return current
-				const fallbackIndex = s.traceState.data.findIndex((t) => t.traceId === fallbackTrace.traceId)
-				return fallbackIndex >= 0 ? fallbackIndex : current
-			}
-			const nextFilteredIdx = Math.max(0, Math.min(currentFilteredIdx + direction, filtered.length - 1))
-			const nextTrace = filtered[nextFilteredIdx]
-			if (!nextTrace) return current
-			const fullIndex = s.traceState.data.findIndex((t) => t.traceId === nextTrace.traceId)
-			return fullIndex >= 0 ? fullIndex : current
-		})
-	}
-
-	const moveServiceLogBy = (direction: -1 | 1) => {
-		const s = $()
-		setSelectedServiceLogIndex((current) => {
-			if (s.serviceLogState.data.length === 0) return 0
-			return Math.max(0, Math.min(current + direction, s.serviceLogState.data.length - 1))
-		})
 	}
 
 	const cycleService = (direction: -1 | 1) => {
@@ -285,9 +376,7 @@ export const useKeyboardNav = (params: KeyboardNavParams) => {
 
 	const copySelectedAttrValue = () => {
 		const s = $()
-		if (!s.selectedTrace || s.selectedSpanIndex === null) return
-		const visible = getVisibleSpans(s.selectedTrace.spans, s.collapsedSpanIds)
-		const span = visible[s.selectedSpanIndex]
+		const span = getSelectedVisibleSpan()
 		if (!span) return
 		const entries = Object.entries(span.tags)
 		const entry = entries[s.selectedAttrIndex] ?? entries[0]
@@ -333,8 +422,7 @@ export const useKeyboardNav = (params: KeyboardNavParams) => {
 			return
 		}
 
-		const visibleSpans = getVisibleSpans(s.selectedTrace.spans, s.collapsedSpanIds)
-		const selectedSpan = s.selectedSpanIndex !== null ? visibleSpans[s.selectedSpanIndex] ?? null : null
+		const selectedSpan = getSelectedVisibleSpan()
 		const lines = [
 			`traceId=${s.selectedTrace.traceId}`,
 			selectedSpan ? `spanId=${selectedSpan.spanId}` : null,
@@ -357,6 +445,11 @@ export const useKeyboardNav = (params: KeyboardNavParams) => {
 
 	const pageBy = (direction: -1 | 1) => {
 		const s = $()
+		if (s.chatNavActive) {
+			const pageSize = Math.max(1, Math.floor((s.isWideLayout ? s.wideBodyLines : s.narrowBodyLines) / 2))
+			setChatScrollOffset((current) => Math.max(0, current + direction * pageSize))
+			return
+		}
 		if (s.attrNavActive) {
 			const count = attrCountForSelectedSpan()
 			if (count === 0) return
@@ -371,202 +464,164 @@ export const useKeyboardNav = (params: KeyboardNavParams) => {
 		}
 		if (s.serviceLogNavActive) {
 			const serviceLogPageSize = Math.max(1, Math.floor((s.isWideLayout ? s.wideBodyLines : s.narrowBodyLines) * 0.5))
-			setSelectedServiceLogIndex((current) => {
-				if (s.serviceLogState.data.length === 0) return 0
-				return Math.max(0, Math.min(current + direction * serviceLogPageSize, s.serviceLogState.data.length - 1))
-			})
+			moveServiceLogBy(direction * serviceLogPageSize)
 		} else if (s.spanNavActive) {
-			if (!s.selectedTrace) return
-			const visibleCount = getVisibleSpans(s.selectedTrace.spans, s.collapsedSpanIds).length
-			setSelectedSpanIndex((current) => {
-				if (visibleCount === 0) return null
-				const start = current ?? 0
-				return Math.max(0, Math.min(start + direction * s.spanPageSize, visibleCount - 1))
-			})
+			moveSpanBy(direction * s.spanPageSize)
 		} else {
-			const filtered = s.filteredTraces
-			if (filtered.length === 0) return
-			setSelectedTraceIndex((current) => {
-				const currentTraceId = s.traceState.data[current]?.traceId
-				const currentFilteredIdx = currentTraceId
-					? filtered.findIndex((t) => t.traceId === currentTraceId)
-					: 0
-				const nextIdx = Math.max(0, Math.min(currentFilteredIdx + direction * s.tracePageSize, filtered.length - 1))
-				const nextTrace = filtered[nextIdx]
-				if (!nextTrace) return current
-				const fullIndex = s.traceState.data.findIndex((t) => t.traceId === nextTrace.traceId)
-				return fullIndex >= 0 ? fullIndex : current
-			})
+			moveTraceBy(direction * s.tracePageSize)
 		}
 	}
 
-	useKeyboard((key) => {
+	const handlePickerMode = (key: KeyboardKey) => {
 		const s = $()
+		if (s.pickerMode === "off") return false
 
-		// Attribute picker modal owns the keyboard while open.
-		if (s.pickerMode !== "off") {
-			const rows = filterFacets(s.attrFacets.data, s.pickerInput)
-			const clampedIndex = rows.length === 0 ? 0 : Math.max(0, Math.min(s.pickerIndex, rows.length - 1))
-			const move = (delta: number) => {
-				if (rows.length === 0) return
-				setPickerIndex(Math.max(0, Math.min(clampedIndex + delta, rows.length - 1)))
-			}
-			if (key.name === "escape") {
+		const rows = filterFacets(s.attrFacets.data, s.pickerInput)
+		const clampedIndex = rows.length === 0 ? 0 : Math.max(0, Math.min(s.pickerIndex, rows.length - 1))
+		const move = (delta: number) => {
+			if (rows.length === 0) return
+			setPickerIndex(Math.max(0, Math.min(clampedIndex + delta, rows.length - 1)))
+		}
+
+		if (key.name === "escape") {
+			closePicker()
+			return true
+		}
+		if (key.ctrl && key.name === "c") {
+			if (s.pickerInput.length > 0) {
+				resetPicker()
+			} else {
 				setPickerMode("off")
-				setPickerInput("")
 				setPickerIndex(0)
-				return
 			}
-			// Ctrl-C: clear input, or close the picker if already empty.
-			if (key.ctrl && key.name === "c") {
-				if (s.pickerInput.length > 0) {
-					setPickerInput("")
-					setPickerIndex(0)
-				} else {
-					setPickerMode("off")
-					setPickerIndex(0)
-				}
-				return
+			return true
+		}
+		if (key.name === "up" || (key.ctrl && key.name === "p")) {
+			move(-1)
+			return true
+		}
+		if (key.name === "down" || (key.ctrl && key.name === "n")) {
+			move(1)
+			return true
+		}
+		if (key.name === "pageup") {
+			move(-10)
+			return true
+		}
+		if (key.name === "pagedown") {
+			move(10)
+			return true
+		}
+		if (key.name === "return" || key.name === "enter") {
+			const row = rows[clampedIndex]
+			if (!row) return true
+			if (s.pickerMode === "keys") {
+				setActiveAttrKey(row.value)
+				setPickerMode("values")
+				resetPicker()
+			} else {
+				setActiveAttrValue(row.value)
+				closePicker()
+				s.flashNotice(`Filter: ${s.activeAttrKey}=${row.value}`)
 			}
-			if (key.name === "up" || (key.ctrl && key.name === "p")) { move(-1); return }
-			if (key.name === "down" || (key.ctrl && key.name === "n")) { move(1); return }
-			if (key.name === "pageup") { move(-10); return }
-			if (key.name === "pagedown") { move(10); return }
-			if (key.name === "return" || key.name === "enter") {
-				const row = rows[clampedIndex]
-				if (!row) return
-				if (s.pickerMode === "keys") {
-					// Drill from keys → values for this key.
-					setActiveAttrKey(row.value)
-					setPickerMode("values")
-					setPickerInput("")
-					setPickerIndex(0)
-				} else {
-					// Apply: activeAttrKey is already set, now pin the value.
-					setActiveAttrValue(row.value)
-					setPickerMode("off")
-					setPickerInput("")
-					setPickerIndex(0)
-					s.flashNotice(`Filter: ${s.activeAttrKey}=${row.value}`)
-				}
-				return
-			}
-			if (key.name === "backspace") {
-				if (s.pickerInput.length > 0) {
-					setPickerInput(s.pickerInput.slice(0, -1))
-					setPickerIndex(0)
-					return
-				}
-				// At empty input in values mode, backspace walks back to keys.
-				if (s.pickerMode === "values") {
-					setPickerMode("keys")
-					setActiveAttrKey(null)
-					setPickerIndex(0)
-					return
-				}
-				return
-			}
-			// Prefer key.sequence over key.name so multi-char paste events that
-			// slip through as a single raw sequence still get inserted in full.
-			const printable = extractPrintable(key)
-			if (printable) {
-				// Functional setState — multiple key events in the same tick would
-				// otherwise all read a stale stateRef.current.pickerInput and
-				// clobber each other, losing all but the last char of a paste.
-				setPickerInput((current) => current + printable)
+			return true
+		}
+		if (key.name === "backspace") {
+			if (s.pickerInput.length > 0) {
+				setPickerInput(s.pickerInput.slice(0, -1))
 				setPickerIndex(0)
-				return
+				return true
 			}
-			return
+			if (s.pickerMode === "values") {
+				setPickerMode("keys")
+				setActiveAttrKey(null)
+				setPickerIndex(0)
+				return true
+			}
+			return true
 		}
 
-		// Filter mode: capture text input
-		if (s.filterMode) {
-			if (key.name === "escape") {
-				setFilterMode(false)
-				setFilterText("")
-				return
-			}
-			// Ctrl-C: clear the input, or exit filter mode if already empty.
-			if (key.ctrl && key.name === "c") {
-				if (s.filterText.length > 0) {
-					setFilterText("")
-				} else {
-					setFilterMode(false)
-				}
-				return
-			}
-			if (key.name === "return" || key.name === "enter") {
-				setFilterMode(false)
-				return
-			}
-			if (key.name === "backspace") {
-				setFilterText((current) => current.slice(0, -1))
-				return
-			}
-			const printable = extractPrintable(key)
-			if (printable) {
-				// Functional setState so rapid keystrokes / pastes don't clobber
-				// each other via a stale stateRef.current.filterText closure.
-				setFilterText((current) => current + printable)
-				return
-			}
-			return
+		const printable = extractPrintable(key)
+		if (printable) {
+			setPickerInput((current) => current + printable)
+			setPickerIndex(0)
+		}
+		return true
+	}
+
+	const handleTraceFilterMode = (key: KeyboardKey) => {
+		const s = $()
+		if (!s.filterMode) return false
+
+		if (key.name === "escape") {
+			setFilterMode(false)
+			setFilterText("")
+			return true
+		}
+		if (key.ctrl && key.name === "c") {
+			if (s.filterText.length > 0) setFilterText("")
+			else setFilterMode(false)
+			return true
+		}
+		if (key.name === "return" || key.name === "enter") {
+			setFilterMode(false)
+			return true
+		}
+		if (key.name === "backspace") {
+			setFilterText((current) => current.slice(0, -1))
+			return true
 		}
 
-		// Waterfall filter mode: text-capture scoped to the current
-		// trace's spans.
-		// - enter  → commit: close input but keep text so dimming persists
-		//            while the user navigates. `/` can be pressed again
-		//            to edit.
-		// - esc    → cancel: clear text + exit input entirely.
-		// - ctrl-c → clear input if non-empty, otherwise exit.
-		if (s.waterfallFilterMode) {
-			if (key.name === "escape") {
-				setWaterfallFilterMode(false)
-				setWaterfallFilterText("")
-				return
-			}
-			if (key.ctrl && key.name === "c") {
-				if (s.waterfallFilterText.length > 0) {
-					setWaterfallFilterText("")
-				} else {
-					setWaterfallFilterMode(false)
-				}
-				return
-			}
-			if (key.name === "return" || key.name === "enter") {
-				setWaterfallFilterMode(false)
-				return
-			}
-			if (key.name === "backspace") {
-				setWaterfallFilterText((current) => current.slice(0, -1))
-				return
-			}
-			const printable = extractPrintable(key)
-			if (printable) {
-				setWaterfallFilterText((current) => current + printable)
-				return
-			}
-			return
+		const printable = extractPrintable(key)
+		if (printable) setFilterText((current) => current + printable)
+		return true
+	}
+
+	const handleWaterfallFilterMode = (key: KeyboardKey) => {
+		const s = $()
+		if (!s.waterfallFilterMode) return false
+
+		if (key.name === "escape") {
+			setWaterfallFilterMode(false)
+			setWaterfallFilterText("")
+			return true
 		}
+		if (key.ctrl && key.name === "c") {
+			if (s.waterfallFilterText.length > 0) setWaterfallFilterText("")
+			else setWaterfallFilterMode(false)
+			return true
+		}
+		if (key.name === "return" || key.name === "enter") {
+			setWaterfallFilterMode(false)
+			return true
+		}
+		if (key.name === "backspace") {
+			setWaterfallFilterText((current) => current.slice(0, -1))
+			return true
+		}
+
+		const printable = extractPrintable(key)
+		if (printable) setWaterfallFilterText((current) => current + printable)
+		return true
+	}
+
+	const handleQuestionMarkKey = (key: KeyboardKey) => {
+		const questionMark = key.name === "?" || (key.name === "/" && key.shift)
+		if (!questionMark) return false
+		clearPendingG()
+		setShowHelp((current) => !current)
+		return true
+	}
+
+	const handleHelpModalKey = (key: KeyboardKey) => {
+		if (!$().showHelp) return false
+		if (key.name === "return" || key.name === "enter" || key.name === "escape") setShowHelp(false)
+		return true
+	}
+
+	const handleJumpKeys = (key: KeyboardKey) => {
 		const plainG = key.name === "g" && !key.ctrl && !key.meta && !key.option && !key.shift
 		const shiftedG = key.name === "g" && key.shift
-		const questionMark = key.name === "?" || (key.name === "/" && key.shift)
-
-		if (questionMark) {
-			clearPendingG()
-			setShowHelp((current) => !current)
-			return
-		}
-
-		if (s.showHelp) {
-			if (key.name === "return" || key.name === "enter" || key.name === "escape") {
-				setShowHelp(false)
-			}
-			return
-		}
-
 		if (plainG && !key.repeated) {
 			if (pendingGRef.current) {
 				clearPendingG()
@@ -574,141 +629,131 @@ export const useKeyboardNav = (params: KeyboardNavParams) => {
 			} else {
 				armPendingG()
 			}
-			return
+			return true
 		}
-
 		if (shiftedG) {
 			clearPendingG()
 			jumpToEnd()
-			return
+			return true
 		}
+		return false
+	}
 
-		clearPendingG()
-
+	const handleSystemKeys = (key: KeyboardKey) => {
+		const s = $()
 		if (key.name === "q" || (key.ctrl && key.name === "c")) {
-			if (quittingRef.current) return
+			if (quittingRef.current) return true
 			quittingRef.current = true
 			renderer.destroy()
-			return
+			return true
 		}
 		if (key.name === "home") {
-			if (s.serviceLogNavActive) {
-				setSelectedServiceLogIndex(0)
-			} else {
-				jumpToStart()
-			}
-			return
+			if (s.serviceLogNavActive) setSelectedServiceLogIndex(0)
+			else jumpToStart()
+			return true
 		}
 		if (key.name === "end") {
-			if (s.serviceLogNavActive) {
-				setSelectedServiceLogIndex(s.serviceLogState.data.length === 0 ? 0 : s.serviceLogState.data.length - 1)
-			} else {
-				jumpToEnd()
-			}
-			return
+			if (s.serviceLogNavActive) setSelectedServiceLogIndex(s.serviceLogState.data.length === 0 ? 0 : s.serviceLogState.data.length - 1)
+			else jumpToEnd()
+			return true
 		}
 		if (key.name === "pagedown" || (key.ctrl && key.name === "d")) {
 			pageBy(1)
-			return
+			return true
 		}
 		if (key.name === "pageup" || (key.ctrl && key.name === "u")) {
 			pageBy(-1)
-			return
+			return true
 		}
 		if (key.ctrl && key.name === "p") {
 			moveTraceBy(-1)
-			return
+			return true
 		}
 		if (key.ctrl && key.name === "n") {
 			moveTraceBy(1)
-			return
+			return true
 		}
-		if (key.name === "escape") {
-			if (s.showHelp) {
-				setShowHelp(false)
-				return
-			}
-			// Committed waterfall filter outranks drill-back: hitting esc
-			// should clear the dim before jumping you out of the span
-			// detail pane. That keeps a single `esc` predictable whether
-			// the filter was applied by typing or left over from before.
-			if (s.waterfallFilterText.length > 0) {
-				setWaterfallFilterText("")
-				return
-			}
-			if (s.detailView === "span-detail" || s.detailView === "service-logs") {
-				setDetailView("waterfall")
-				return
-			}
-			if (s.spanNavActive) {
-				setSelectedSpanIndex(null)
-				return
-			}
-			// At the trace list, `esc` clears any applied attribute filter so
-			// there's a clean way back to the unfiltered list without hunting
-			// for the picker key.
-			if (s.activeAttrKey || s.activeAttrValue) {
-				setActiveAttrKey(null)
-				setActiveAttrValue(null)
-				s.flashNotice("Cleared attribute filter")
-				return
-			}
-			return
+		return false
+	}
+
+	const handleEscapeKey = (key: KeyboardKey) => {
+		if (key.name !== "escape") return false
+		const s = $()
+		if (s.waterfallFilterText.length > 0) {
+			setWaterfallFilterText("")
+			return true
 		}
-		if (key.name === "return" || key.name === "enter") {
-			if (s.detailView === "service-logs") {
-				const selectedLog = s.serviceLogState.data[s.selectedServiceLogIndex]
-				if (selectedLog?.traceId) {
-					const traceIndex = s.traceState.data.findIndex((trace) => trace.traceId === selectedLog.traceId)
-					if (traceIndex >= 0) {
-						setSelectedTraceIndex(traceIndex)
-						setDetailView("waterfall")
-						s.flashNotice(`Jumped to trace ${selectedLog.traceId.slice(-8)}`)
-					}
+		if (s.detailView === "span-detail" || s.detailView === "service-logs") {
+			setDetailView("waterfall")
+			return true
+		}
+		if (s.spanNavActive) {
+			setSelectedSpanIndex(null)
+			return true
+		}
+		if (s.activeAttrKey || s.activeAttrValue) {
+			setActiveAttrKey(null)
+			setActiveAttrValue(null)
+			s.flashNotice("Cleared attribute filter")
+			return true
+		}
+		return true
+	}
+
+	const handleEnterKey = (key: KeyboardKey) => {
+		if (key.name !== "return" && key.name !== "enter") return false
+		const s = $()
+		if (s.detailView === "service-logs") {
+			const selectedLog = s.serviceLogState.data[s.selectedServiceLogIndex]
+			if (selectedLog?.traceId) {
+				const traceIndex = findTraceIndexById(s.traceState.data, selectedLog.traceId)
+				if (traceIndex >= 0) {
+					setSelectedTraceIndex(traceIndex)
+					setDetailView("waterfall")
+					s.flashNotice(`Jumped to trace ${selectedLog.traceId.slice(-8)}`)
 				}
-				return
 			}
-			if (s.spanNavActive && s.detailView === "waterfall") {
-				setDetailView("span-detail")
-				return
-			}
-			if (!s.spanNavActive && s.selectedTrace && s.selectedTrace.spans.length > 0) {
-				setSelectedSpanIndex(0)
-				return
-			}
-			return
+			return true
 		}
+		if (s.spanNavActive && s.detailView === "waterfall") {
+			setDetailView("span-detail")
+			return true
+		}
+		if (!s.spanNavActive && s.selectedTrace && s.selectedTrace.spans.length > 0) {
+			setSelectedSpanIndex(0)
+			return true
+		}
+		return true
+	}
+
+	const handleToolbarKeys = (key: KeyboardKey) => {
+		const s = $()
 		if (key.name === "r") {
 			refresh("Refreshing traces...")
-			return
+			return true
 		}
 		if (key.name === "a") {
 			setAutoRefresh(!s.autoRefresh)
 			s.flashNotice(s.autoRefresh ? "Auto-refresh paused" : "Auto-refresh resumed")
-			return
+			return true
 		}
 		if (key.name === "s") {
 			const modes: readonly TraceSortMode[] = ["recent", "slowest", "errors"]
 			const nextMode = modes[(modes.indexOf(s.traceSort) + 1) % modes.length] ?? "recent"
 			setTraceSort(nextMode)
 			s.flashNotice(`Sort: ${nextMode}`)
-			return
+			return true
 		}
 		if (key.name === "t") {
 			const nextTheme = cycleThemeName(s.selectedTheme)
 			setSelectedTheme(nextTheme)
 			s.flashNotice(`Theme: ${themeLabel(nextTheme)}`)
-			return
+			return true
 		}
-		// `n` / `N`: jump between matches of the committed waterfall filter.
-		// Only active when drilled into a trace AND the filter has text
-		// (committed or live — either way, there's a dim/highlight we can
-		// step through). Wraps at the ends like vim's /n. Plain `n` forward,
-		// shift-n (`N`) backward.
 		if ((key.name === "n" || key.name === "N") && !key.ctrl && !key.meta) {
 			const inWaterfall = s.detailView === "span-detail" || s.selectedSpanIndex !== null
 			if (inWaterfall && s.waterfallFilterText.length > 0 && s.selectedTrace) {
-				const visibleSpans = getVisibleSpans(s.selectedTrace.spans, s.collapsedSpanIds)
+				const visibleSpans = getVisibleSelectedSpans()
 				const matchingIds = computeMatchingSpanIds(visibleSpans, s.waterfallFilterText)
 				if (matchingIds && matchingIds.size > 0) {
 					const direction = key.name === "N" ? -1 : 1
@@ -718,91 +763,53 @@ export const useKeyboardNav = (params: KeyboardNavParams) => {
 				} else {
 					s.flashNotice("No matches")
 				}
-				return
+				return true
 			}
-			// Fall through when not in a trace detail view — reserves `n`
-			// for other future bindings without shadowing them globally.
 		}
-
 		if (key.name === "/" && !key.shift) {
-			// When drilled into a trace (viewLevel >= 1 — waterfall or
-			// span detail is the dominant pane), `/` opens a filter scoped
-			// to the current trace's spans instead of the trace list.
-			// Drill level here is inferred from selectedSpanIndex/detailView
-			// the same way useAppLayout does it.
 			const inWaterfall = s.detailView === "span-detail" || s.selectedSpanIndex !== null
-			if (inWaterfall) {
-				setWaterfallFilterMode(true)
-			} else {
-				setFilterMode(true)
-			}
-			return
+			if (inWaterfall) setWaterfallFilterMode(true)
+			else setFilterMode(true)
+			return true
 		}
 		if ((key.name === "f" || key.name === "F") && !key.ctrl && !key.meta) {
-			// Open attribute picker at the keys step. If a filter is already
-			// applied, reopening lets the user refine or switch.
 			setPickerMode("keys")
-			setPickerInput("")
-			setPickerIndex(0)
+			resetPicker()
 			setActiveAttrKey(null)
-			return
+			return true
 		}
 		if (key.name === "tab") {
 			toggleServiceLogsView()
-			return
+			return true
 		}
 		if (key.name === "[") {
 			cycleService(-1)
-			return
+			return true
 		}
 		if (key.name === "]") {
 			cycleService(1)
-			return
+			return true
 		}
+		return false
+	}
+
+	const handleMovementKeys = (key: KeyboardKey) => {
+		const s = $()
 		if (key.name === "up" || key.name === "k") {
-			if (s.attrNavActive) {
-				setSelectedAttrIndex((current) => Math.max(0, current - 1))
-				return
-			}
-			if (s.serviceLogNavActive) {
-				moveServiceLogBy(-1)
-			} else if (s.spanNavActive) {
-				// Locked to span nav; never fall through to trace-list nav while
-				// drilled in. If the trace detail is still loading, swallow the
-				// key instead of silently leaking it to the trace list.
-				if (s.selectedTrace) {
-					const visibleCount = getVisibleSpans(s.selectedTrace.spans, s.collapsedSpanIds).length
-					setSelectedSpanIndex((current) => {
-						if (current === null || visibleCount === 0) return 0
-						return Math.max(0, current - 1)
-					})
-				}
-			} else {
-				moveTraceBy(-1)
-			}
-			return
+			if (s.chatNavActive) setChatScrollOffset(Math.max(0, s.chatScrollOffset - 1))
+			else if (s.attrNavActive) moveAttrBy(-1)
+			else if (s.serviceLogNavActive) moveServiceLogBy(-1)
+			else if (s.spanNavActive && s.selectedTrace) moveSpanBy(-1)
+			else moveTraceBy(-1)
+			return true
 		}
 		if (key.name === "down" || key.name === "j") {
-			if (s.attrNavActive) {
-				const count = attrCountForSelectedSpan()
-				if (count === 0) return
-				setSelectedAttrIndex((current) => Math.min(current + 1, count - 1))
-				return
-			}
-			if (s.serviceLogNavActive) {
-				moveServiceLogBy(1)
-			} else if (s.spanNavActive) {
-				if (s.selectedTrace) {
-					const visibleCount = getVisibleSpans(s.selectedTrace.spans, s.collapsedSpanIds).length
-					setSelectedSpanIndex((current) => {
-						if (current === null || visibleCount === 0) return 0
-						return Math.min(current + 1, visibleCount - 1)
-					})
-				}
-			} else {
-				moveTraceBy(1)
-			}
-			return
+			if (s.chatNavActive) setChatScrollOffset(s.chatScrollOffset + 1)
+			else if (s.attrNavActive) moveAttrBy(1)
+			else if (s.serviceLogNavActive) moveServiceLogBy(1)
+			else if (s.spanNavActive && s.selectedTrace) moveSpanBy(1)
+			else moveTraceBy(1)
+			return true
 		}
 		if (key.name === "left" || key.name === "h") {
 			if (s.spanNavActive && s.selectedTrace) {
@@ -814,13 +821,11 @@ export const useKeyboardNav = (params: KeyboardNavParams) => {
 						selectedIndex: s.selectedSpanIndex,
 						direction: "left",
 					})
-					if (result.selectedIndex !== s.selectedSpanIndex) {
-						setSelectedSpanIndex(result.selectedIndex)
-					}
+					if (result.selectedIndex !== s.selectedSpanIndex) setSelectedSpanIndex(result.selectedIndex)
 					return result.collapsed
 				})
 			}
-			return
+			return true
 		}
 		if (key.name === "right" || key.name === "l") {
 			if (s.spanNavActive && s.selectedTrace) {
@@ -832,16 +837,19 @@ export const useKeyboardNav = (params: KeyboardNavParams) => {
 						selectedIndex: s.selectedSpanIndex,
 						direction: "right",
 					})
-					if (result.selectedIndex !== s.selectedSpanIndex) {
-						setSelectedSpanIndex(result.selectedIndex)
-					}
+					if (result.selectedIndex !== s.selectedSpanIndex) setSelectedSpanIndex(result.selectedIndex)
 					return result.collapsed
 				})
 			} else if (!s.spanNavActive && !s.serviceLogNavActive) {
 				toggleServiceLogsView()
 			}
-			return
+			return true
 		}
+		return false
+	}
+
+	const handleOpenCopyKeys = (key: KeyboardKey) => {
+		const s = $()
 		if (key.name === "o" && !key.shift) {
 			if (s.serviceLogNavActive) {
 				const selectedLog = s.serviceLogState.data[s.selectedServiceLogIndex]
@@ -849,29 +857,22 @@ export const useKeyboardNav = (params: KeyboardNavParams) => {
 					void Bun.spawn({ cmd: ["open", traceUiUrl(selectedLog.traceId)], stdout: "ignore", stderr: "ignore" })
 					s.flashNotice(`Opened trace ${selectedLog.traceId.slice(-8)}`)
 				}
-				return
+				return true
 			}
-			if (!s.selectedTrace) return
+			if (!s.selectedTrace) return true
 			void Bun.spawn({ cmd: ["open", traceUiUrl(s.selectedTrace.traceId)], stdout: "ignore", stderr: "ignore" })
 			s.flashNotice(`Opened trace ${s.selectedTrace.traceId.slice(-8)}`)
-			return
+			return true
 		}
 		if (key.name === "o" && key.shift) {
 			void Bun.spawn({ cmd: ["open", webUiUrl()], stdout: "ignore", stderr: "ignore" })
 			s.flashNotice("Opened web UI")
-			return
+			return true
 		}
 		if (key.name === "y" || key.name === "Y") {
-			// In the full-screen span content view, `y` copies the
-			// selected attribute's value (useful for grabbing a prompt or
-			// response chunk). Everywhere else it falls back to the
-			// existing "copy trace/span id" behaviour.
-			if (s.attrNavActive) {
-				copySelectedAttrValue()
-			} else {
-				copySelectedIds()
-			}
-			return
+			if (s.attrNavActive && !s.chatNavActive) copySelectedAttrValue()
+			else copySelectedIds()
+			return true
 		}
 		if (key.name === "c" || key.name === "C") {
 			void copyToClipboard(otelServerInstructions())
@@ -881,7 +882,27 @@ export const useKeyboardNav = (params: KeyboardNavParams) => {
 				.catch((error) => {
 					s.flashNotice(error instanceof Error ? error.message : String(error))
 				})
+			return true
 		}
+		return false
+	}
+
+	useKeyboard((key: KeyboardKey) => {
+		if (handlePickerMode(key)) return
+		if (handleTraceFilterMode(key)) return
+		if (handleWaterfallFilterMode(key)) return
+		if (handleQuestionMarkKey(key)) return
+		if (handleHelpModalKey(key)) return
+		if (handleJumpKeys(key)) return
+
+		clearPendingG()
+
+		if (handleSystemKeys(key)) return
+		if (handleEscapeKey(key)) return
+		if (handleEnterKey(key)) return
+		if (handleToolbarKeys(key)) return
+		if (handleMovementKeys(key)) return
+		handleOpenCopyKeys(key)
 	})
 
 	return { spanNavActive }
