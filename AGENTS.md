@@ -31,6 +31,18 @@
 - Effect LSP diagnostics over the whole project: `bunx effect-language-service diagnostics --project tsconfig.json --format text`
 - Effect LSP interactive setup wizard: `bunx effect-language-service setup`
 
+## Release Strategy
+- npm package: `@kitlangton/motel`
+- Current published npm `latest`: `0.2.4` (`npm view @kitlangton/motel dist-tags --json`)
+- Tags are versioned as `vX.Y.Z` (`git tag --sort=-version:refname` shows `v0.2.4`, `v0.2.3`, ...)
+- Publishing is handled by GitHub Actions in `.github/workflows/publish.yml`, not by local manual `npm publish`
+- The publish workflow triggers on `git push` of tags matching `v*` or via manual `workflow_dispatch`
+- The workflow runs `bun install --frozen-lockfile`, `bun run typecheck`, `bun run test`, then `npm publish --provenance`
+- `npm publish` runs `prepublishOnly`, which builds the web UI via `bun run web:build`
+- Before tagging a release, make sure the committed `package.json` version matches the intended git tag exactly
+- Preferred release flow: update `package.json` version, commit the release changes, create tag `v<package.json version>`, push the commit and tag, then verify the GitHub Actions publish and npm dist-tags
+- Do not create or push release tags from a dirty worktree with unrelated uncommitted changes; ask before including unrelated edits in a release
+
 ## Effect LSP
 The repo is wired up with `@effect/language-service` as a `tsconfig.json` `plugins` entry. Editors that pick up the TypeScript workspace plugin (Zed, VSCode, Cursor, NVim via vtsls) will surface Effect-specific diagnostics, quick fixes, and refactors inline. In Zed this requires selecting the workspace TypeScript version — it does so automatically when `node_modules/typescript` is present.
 
