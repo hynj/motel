@@ -34,7 +34,10 @@ const roleColor = (role: Role): string => {
 const lineTextColor = (line: ChatLine): string => {
 	switch (line.kind) {
 		case "role-divider": return roleColor(line.role)
-		case "chunk-header": return roleColor(line.role)
+		// Chunk headers (tool call, tool result, reasoning, system)
+		// render muted by default so the role divider above keeps
+		// visual weight; the expand marker + meta do the work.
+		case "chunk-header": return colors.muted
 		case "text": return colors.text
 		case "reasoning": return colors.muted
 		case "tool-call-body": return colors.count
@@ -184,6 +187,14 @@ export const AiChatView = ({
 	)
 }
 
+// Selection rendering: a single colored left-edge bar (`▎`) runs down
+// the full footprint of the selected chunk — its header plus every
+// body line that belongs to it. Reads much cleaner than background
+// highlight and matches the vim-style "range is visible on the left
+// gutter" convention.
+const SELECTION_BAR = "\u258e" // left one-quarter block
+const INACTIVE_GUTTER = " "
+
 const renderLine = (
 	line: ChatLine,
 	index: number,
@@ -193,11 +204,17 @@ const renderLine = (
 	width: number,
 ) => {
 	const color = lineTextColor(line)
+	const isSelected = line.chunkId !== null && line.chunkId === selectedChunkId
+	const gutterChar = isSelected ? SELECTION_BAR : INACTIVE_GUTTER
+	const gutterColor = isSelected ? roleColor(line.role) : colors.separator
 
 	if (line.kind === "role-divider") {
+		// Role dividers are never selectable (no chunkId) so the
+		// gutter is always blank but the label gets the role color for
+		// instant visual tagging.
 		return (
 			<TextLine key={`l-${index}`}>
-				<span fg={colors.separator}>{"\u2500 "}</span>
+				<span fg={colors.separator}>{" "}</span>
 				<span fg={color} attributes={TextAttributes.BOLD}>{line.text}</span>
 			</TextLine>
 		)
@@ -208,18 +225,22 @@ const renderLine = (
 	}
 
 	if (line.kind === "chunk-header") {
-		const isSelected = line.chunkId === selectedChunkId
-		const cursor = isSelected ? "\u25b8 " : "  "
 		const chunk = line.chunkId ? chunks.find((c) => c.id === line.chunkId) : null
 		const expandedNow = chunk ? isChunkExpanded(chunk, expanded) : false
-		const marker = chunk?.collapsible ? (expandedNow ? "\u25be " : "\u25b8 ") : "  "
-		const rightWidth = Math.max(0, width - line.text.length - cursor.length - marker.length - 2)
+		// Single marker per header: `▸` when collapsed, `▾` when
+		// expanded, blank for non-collapsible chunks. No second cursor
+		// — the left-gutter bar already tells the reader what's
+		// selected.
+		const marker = chunk?.collapsible
+			? (expandedNow ? "\u25be " : "\u25b8 ")
+			: "  "
 		const meta = line.headerMeta ?? ""
+		const rightWidth = Math.max(0, width - line.text.length - marker.length - 2)
 		const padding = Math.max(1, rightWidth - meta.length)
 		return (
-			<TextLine key={`l-${index}`} bg={isSelected ? colors.selectedBg : undefined}>
-				<span fg={isSelected ? colors.accent : colors.separator}>{cursor}</span>
-				<span fg={isSelected ? colors.accent : colors.separator}>{marker}</span>
+			<TextLine key={`l-${index}`}>
+				<span fg={gutterColor}>{gutterChar}</span>
+				<span fg={chunk?.collapsible ? colors.muted : colors.separator}>{marker}</span>
 				<span fg={color} attributes={isSelected ? TextAttributes.BOLD : undefined}>{line.text}</span>
 				{meta ? (
 					<>
@@ -231,9 +252,10 @@ const renderLine = (
 		)
 	}
 
-	const isSelectedChunk = line.chunkId !== null && line.chunkId === selectedChunkId
+	// Body line (text / reasoning / tool body / hint).
 	return (
-		<TextLine key={`l-${index}`} bg={isSelectedChunk ? colors.selectedBg : undefined}>
+		<TextLine key={`l-${index}`}>
+			<span fg={gutterColor}>{gutterChar}</span>
 			<span fg={color}>{line.text}</span>
 		</TextLine>
 	)

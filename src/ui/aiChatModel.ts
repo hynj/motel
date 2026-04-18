@@ -47,6 +47,12 @@ export interface Chunk {
 	/** Full body text. For purely-header chunks like tool-calls, may be ""; for
 	 *  text-only chunks like user-text this is the message content. */
 	readonly body: string
+	/** Whether to render a chunk-header row for this chunk. Plain text kinds
+	 *  (user-text, assistant-text, system when expanded, response, raw-prompt)
+	 *  skip it — the role divider rendered once per turn provides enough
+	 *  context. Tool calls, tool results, reasoning, and unknown parts get
+	 *  their own header because they need to show the tool name / kind. */
+	readonly needsHeader: boolean
 	/** Whether the user can expand this chunk for more detail. */
 	readonly collapsible: boolean
 	/** When true, body is hidden by default unless expanded. When false the
@@ -260,6 +266,7 @@ export const buildChunks = (
 			header: "PROMPT (raw)",
 			headerMeta: `${formatKilo(raw.length)} chars`,
 			body: raw,
+			needsHeader: false,
 			collapsible: true,
 			collapsedByDefault: false,
 		})
@@ -287,6 +294,12 @@ export const buildChunks = (
 				header: "SYSTEM",
 				headerMeta: `${formatKilo(sanitized.length)} chars`,
 				body: sanitized,
+				// System prompts keep their own "SYSTEM" header so the
+				// collapse marker (▸/▾) + char count have somewhere to
+				// sit when collapsed by default. The role divider just
+				// above renders "SYSTEM" again — acceptable since the
+				// collapsed system chunk has no body text visible.
+				needsHeader: true,
 				collapsible: true,
 				collapsedByDefault: true,
 			})
@@ -304,6 +317,7 @@ export const buildChunks = (
 				header: role.toUpperCase(),
 				headerMeta: null,
 				body: sanitized,
+				needsHeader: false,
 				collapsible: false,
 				collapsedByDefault: false,
 			})
@@ -328,6 +342,7 @@ export const buildChunks = (
 					header: role.toUpperCase(),
 					headerMeta: null,
 					body: text,
+					needsHeader: false,
 					collapsible: false,
 					collapsedByDefault: false,
 				})
@@ -343,9 +358,10 @@ export const buildChunks = (
 					role,
 					messageIndex: mi,
 					partIndex: pi,
-					header: "\u2022 reasoning",
+					header: "reasoning",
 					headerMeta: `${formatKilo(text.length)} chars`,
 					body: text,
+					needsHeader: true,
 					collapsible: true,
 					collapsedByDefault: true,
 				})
@@ -372,6 +388,7 @@ export const buildChunks = (
 					header,
 					headerMeta: null,
 					body: summary.fullJson,
+					needsHeader: true,
 					collapsible: summary.fullJson.length > 0 && summary.fullJson.length > summary.inline.length,
 					collapsedByDefault: true,
 					toolName: name,
@@ -400,6 +417,7 @@ export const buildChunks = (
 						? `${formatKilo(body.length)} chars`
 						: "(empty)",
 					body,
+					needsHeader: true,
 					collapsible: body.length > 0,
 					// Long results collapse by default; short ones inline.
 					collapsedByDefault: body.length > 240 || body.split("\n").length > TOOL_RESULT_PREVIEW_LINES,
@@ -421,6 +439,7 @@ export const buildChunks = (
 				header: `[${t ?? "unknown"}]`,
 				headerMeta: `${formatKilo(body.length)} chars`,
 				body,
+				needsHeader: true,
 				collapsible: body.length > 0,
 				collapsedByDefault: true,
 			})
@@ -437,6 +456,7 @@ export const buildChunks = (
 			header: "RESPONSE",
 			headerMeta: null,
 			body: sanitizeText(detail.responseText),
+			needsHeader: false,
 			collapsible: false,
 			collapsedByDefault: false,
 		})
@@ -523,28 +543,50 @@ export const renderChunks = (
 		return [{ kind: "empty", role: "unknown", text: "no chat content", chunkId: null }]
 	}
 
-	// Role headers no longer render as a separate divider line — the
-	// chunk header itself carries the role (e.g. `USER`, `ASSISTANT`,
-	// `▸ bash  git status`) so printing a `— USER` line above an
-	// already-tagged chunk just reads as duplication. We only emit a
-	// blank separator when the role/message boundary changes so turns
-	// still read as discrete beats.
+	// Two visual layers:
+	//
+	// 1. A role divider (USER / ASSISTANT / TOOL / SYSTEM / RESPONSE)
+	//    renders once at every turn boundary. It's a lightweight title
+	//    that anchors the reader and visually separates conversation
+	//    beats without repeating per chunk.
+	//
+	// 2. Each chunk contributes either:
+	//    - Text-kind chunks (user-text, assistant-text, response,
+	//      raw-prompt): just their body, flush-indented under the role
+	//      divider. No chunk-header row — `needsHeader` is false.
+	//    - Structured chunks (reasoning, tool-call, tool-result, system,
+	//      unknown): a chunk-header row carrying the kind + expand
+	//      marker, followed by the body when expanded.
+	//
+	// Every rendered line carries the owning `chunkId` so the view can
+	// draw a continuous left-edge selection bar across the chunk's
+	// full footprint (header + body).
 	let prevRole: Role | null = null
 	let prevMessageIndex = -1
 
 	for (const chunk of chunks) {
 		const roleChanged = chunk.role !== prevRole || chunk.messageIndex !== prevMessageIndex
-		if (roleChanged && lines.length > 0) {
-			lines.push({ kind: "separator", role: "unknown", text: "", chunkId: null })
+		if (roleChanged) {
+			if (lines.length > 0) {
+				lines.push({ kind: "separator", role: "unknown", text: "", chunkId: null })
+			}
+			lines.push({
+				kind: "role-divider",
+				role: chunk.role,
+				text: chunk.role.toUpperCase(),
+				chunkId: null,
+			})
 		}
 
-		lines.push({
-			kind: "chunk-header",
-			role: chunk.role,
-			text: chunk.header,
-			headerMeta: chunk.headerMeta ?? undefined,
-			chunkId: chunk.id,
-		})
+		if (chunk.needsHeader) {
+			lines.push({
+				kind: "chunk-header",
+				role: chunk.role,
+				text: chunk.header,
+				headerMeta: chunk.headerMeta ?? undefined,
+				chunkId: chunk.id,
+			})
+		}
 
 		const expandedNow = isChunkExpanded(chunk, expanded)
 
@@ -556,13 +598,12 @@ export const renderChunks = (
 							: chunk.kind === "unknown" ? "hint"
 								: "text"
 
-			// Every expanded body is indented 2 spaces under its header
-			// so the outline structure reads naturally and the selected
-			// chunk's full extent is visually obvious (the selection
-			// highlight runs from the header down through all its body
-			// lines).
-			const indent = "  "
-			const wrapped = wrapTextLines(chunk.body, bodyWidth, 2_000)
+			// Text bodies hang off the role divider with a small indent
+			// so prose reads clean. Structured bodies (tool args, tool
+			// results, reasoning) indent deeper so they're obviously
+			// subordinate to their own chunk header.
+			const indent = chunk.needsHeader ? "  " : " "
+			const wrapped = wrapTextLines(chunk.body, chunk.needsHeader ? bodyWidth : wrapWidth, 2_000)
 			for (const line of wrapped) {
 				lines.push({
 					kind: bodyKind,
@@ -572,8 +613,8 @@ export const renderChunks = (
 				})
 			}
 		}
-		// Collapsed chunks: the header already shows a `▸` marker +
-		// char count on the right; no "enter to expand" per-line hint.
+		// Collapsed chunks: the header already shows the expand marker
+		// + char count on the right; no "enter to expand" per-line hint.
 		// The footer carries the keyboard hint globally.
 
 		prevRole = chunk.role
