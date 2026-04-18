@@ -858,6 +858,21 @@ export const makeTelemetryStoreLayer = (opts: TelemetryStoreOptions) => Layer.ef
 			query.run(...entries.flatMap(([key, value]) => [logId, key, value]))
 		}
 		const insertLogBodySearch = db.query(`INSERT INTO log_body_fts (log_id, body) VALUES (?, ?)`)
+		const insertLogBodySearchManyByCount = new Map<number, ReturnType<Database["query"]>>()
+		const insertLogBodySearchMany = (entries: ReadonlyArray<readonly [string, string]>) => {
+			if (entries.length === 0) return
+			if (entries.length === 1) {
+				const [logId, body] = entries[0]!
+				insertLogBodySearch.run(logId, body)
+				return
+			}
+			let query = insertLogBodySearchManyByCount.get(entries.length)
+			if (!query) {
+				query = db.query(`INSERT INTO log_body_fts (log_id, body) VALUES ${entries.map(() => "(?, ?)").join(", ")}`)
+				insertLogBodySearchManyByCount.set(entries.length, query)
+			}
+			query.run(...entries.flatMap(([logId, body]) => [logId, body]))
+		}
 
 		const maxDbSizeBytes = config.otel.maxDbSizeMb * 1024 * 1024
 
@@ -1083,6 +1098,7 @@ export const makeTelemetryStoreLayer = (opts: TelemetryStoreOptions) => Layer.ef
 			return yield* Effect.sync(() => {
 				let insertedLogs = 0
 				const transaction = db.transaction((request: OtlpLogExportRequest) => {
+					const touchedLogBodies: Array<readonly [string, string]> = []
 					for (const resourceLogs of request.resourceLogs ?? []) {
 						const resourceAttributes = attributeMap(resourceLogs.resource?.attributes)
 						const serviceName = resourceAttributes["service.name"] || resourceAttributes["service_name"] || "unknown"
@@ -1108,14 +1124,18 @@ export const makeTelemetryStoreLayer = (opts: TelemetryStoreOptions) => Layer.ef
 								)
 								const logId = Number((result as { lastInsertRowid: number | bigint }).lastInsertRowid)
 								insertLogAttributesMany(logId, mergedAttributes)
-								try {
-									insertLogBodySearch.run(String(logId), body)
-								} catch {
-									// FTS is optional.
-								}
+								touchedLogBodies.push([String(logId), body])
 								insertedLogs += 1
 							}
 						}
+					}
+					try {
+						const BATCH_SIZE = 500
+						for (let offset = 0; offset < touchedLogBodies.length; offset += BATCH_SIZE) {
+							insertLogBodySearchMany(touchedLogBodies.slice(offset, offset + BATCH_SIZE))
+						}
+					} catch {
+						// FTS is optional.
 					}
 				})
 

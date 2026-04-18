@@ -69,6 +69,7 @@
     "web:build": "bun run --cwd web build",
     "story:chat": "bun run src/storybook/aiChatStory.tsx",
     "bench:motel-cold-start": "bun run scripts/bench-motel-cold-start.ts",
+    "bench:ingest-logs": "bun run scripts/bench-ingest-logs.ts",
     "bench:ingest-traces": "bun run scripts/bench-ingest-traces.ts",
     "bench:search-spans": "bun run scripts/bench-search-spans.ts",
     "typecheck": "tsc --noEmit",

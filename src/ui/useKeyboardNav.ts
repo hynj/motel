@@ -19,6 +19,9 @@ import {
 	detailViewAtom,
 	filterModeAtom,
 	filterTextAtom,
+	getCachedFacetKeys,
+	getCachedFacetValues,
+	initialAttrFacetState,
 	refreshNonceAtom,
 	selectedAttrIndexAtom,
 	selectedChatChunkIdAtom,
@@ -125,7 +128,7 @@ export const useKeyboardNav = (params: KeyboardNavParams) => {
 	const [pickerMode, setPickerMode] = useAtom(attrPickerModeAtom)
 	const [pickerInput, setPickerInput] = useAtom(attrPickerInputAtom)
 	const [pickerIndex, setPickerIndex] = useAtom(attrPickerIndexAtom)
-	const [attrFacets] = useAtom(attrFacetStateAtom)
+	const [attrFacets, setAttrFacets] = useAtom(attrFacetStateAtom)
 	const [activeAttrKey, setActiveAttrKey] = useAtom(activeAttrKeyAtom)
 	const [activeAttrValue, setActiveAttrValue] = useAtom(activeAttrValueAtom)
 	const [waterfallFilterMode, setWaterfallFilterMode] = useAtom(waterfallFilterModeAtom)
@@ -257,6 +260,26 @@ export const useKeyboardNav = (params: KeyboardNavParams) => {
 	const resetPicker = () => {
 		setPickerInput("")
 		setPickerIndex(0)
+	}
+
+	const hydrateCachedPickerKeys = (service: string | null) => {
+		if (!service) {
+			setAttrFacets(initialAttrFacetState)
+			return
+		}
+		const cached = getCachedFacetKeys(service)
+		if (!cached) return
+		setAttrFacets({ status: "ready", key: null, data: cached.data, error: null })
+	}
+
+	const hydrateCachedPickerValues = (service: string | null, key: string | null) => {
+		if (!service || !key) {
+			setAttrFacets(initialAttrFacetState)
+			return
+		}
+		const cached = getCachedFacetValues(service, key)
+		if (!cached) return
+		setAttrFacets({ status: "ready", key, data: cached.data, error: null })
 	}
 
 	const closePicker = () => {
@@ -587,6 +610,7 @@ export const useKeyboardNav = (params: KeyboardNavParams) => {
 			const row = rows[clampedIndex]
 			if (!row) return true
 			if (s.pickerMode === "keys") {
+				hydrateCachedPickerValues(s.selectedTraceService, row.value)
 				setActiveAttrKey(row.value)
 				setPickerMode("values")
 				resetPicker()
@@ -604,6 +628,7 @@ export const useKeyboardNav = (params: KeyboardNavParams) => {
 				return true
 			}
 			if (s.pickerMode === "values") {
+				hydrateCachedPickerKeys(s.selectedTraceService)
 				setPickerMode("keys")
 				setActiveAttrKey(null)
 				setPickerIndex(0)
@@ -857,6 +882,7 @@ export const useKeyboardNav = (params: KeyboardNavParams) => {
 			return true
 		}
 		if ((key.name === "f" || key.name === "F") && !key.ctrl && !key.meta) {
+			hydrateCachedPickerKeys(s.selectedTraceService)
 			setPickerMode("keys")
 			resetPicker()
 			setActiveAttrKey(null)
