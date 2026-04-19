@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs"
 import { dirname } from "node:path"
 import { config } from "../config.ts"
-import type { ThemeName } from "./theme.ts"
+import { defaultThemeName, type ThemeName } from "./theme.ts"
 
 const lastServicePath = `${dirname(config.otel.databasePath)}/last-service.txt`
 
@@ -26,9 +26,9 @@ const lastThemePath = `${dirname(config.otel.databasePath)}/last-theme.txt`
 export const readLastTheme = (): ThemeName => {
 	try {
 		const raw = readFileSync(lastThemePath, "utf-8").trim()
-		return raw === "tokyo-night" || raw === "catppuccin" || raw === "motel-default" ? raw : "motel-default"
+		return raw === "tokyo-night" || raw === "catppuccin" || raw === "motel-default" ? raw : defaultThemeName
 	} catch {
-		return "motel-default"
+		return defaultThemeName
 	}
 }
 

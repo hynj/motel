@@ -135,13 +135,15 @@ export const themes = {
 
 export type ThemeName = keyof typeof themes
 
-export const themeOrder: readonly ThemeName[] = ["motel-default", "tokyo-night", "catppuccin"]
+export const defaultThemeName: ThemeName = "tokyo-night"
 
-export const colors: ThemeColors = { ...motelDefaultTheme.colors }
-export const waterfallColors: ThemeWaterfallColors = { ...motelDefaultTheme.waterfall }
+export const themeOrder: readonly ThemeName[] = ["tokyo-night", "catppuccin", "motel-default"]
+
+export const colors: ThemeColors = { ...themes[defaultThemeName].colors }
+export const waterfallColors: ThemeWaterfallColors = { ...themes[defaultThemeName].waterfall }
 
 export const applyTheme = (name: ThemeName) => {
-	const theme = themes[name] ?? motelDefaultTheme
+	const theme = themes[name] ?? themes[defaultThemeName]
 	Object.assign(colors, theme.colors)
 	Object.assign(waterfallColors, theme.waterfall)
 	return theme
@@ -152,7 +154,7 @@ export const cycleThemeName = (current: ThemeName) => {
 	return themeOrder[nextIndex] ?? themeOrder[0]
 }
 
-export const themeLabel = (name: ThemeName) => themes[name]?.label ?? motelDefaultTheme.label
+export const themeLabel = (name: ThemeName) => themes[name]?.label ?? themes[defaultThemeName].label
 
 export const SEPARATOR = " \u00b7 "
 export const G_PREFIX_TIMEOUT_MS = 500
