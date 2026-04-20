@@ -20,7 +20,7 @@
  */
 
 import * as BunWorker from "@effect/platform-bun/BunWorker"
-import { Context, Effect, Layer, Scope } from "effect"
+import { Cause, Context, Effect, Layer, Scope } from "effect"
 import * as RpcClient from "effect/unstable/rpc/RpcClient"
 import type { RpcClientError } from "effect/unstable/rpc/RpcClientError"
 import * as RpcSerialization from "effect/unstable/rpc/RpcSerialization"
@@ -45,7 +45,54 @@ const WorkerProtocol = RpcClient.layerProtocolWorker({ size: 1 }).pipe(
 	Layer.provide(
 		BunWorker.layer(() => new Worker(new URL("./telemetryWorker.ts", import.meta.url))),
 	),
+	// #region motel debug
+	Layer.provideMerge(
+		Layer.succeed(
+			RpcClient.ConnectionHooks,
+			RpcClient.ConnectionHooks.of({
+				onConnect: Effect.logInfo("motel debug async ingest worker connected", {
+					debug: {
+						session: "motel-ingest-503-2026-04-20",
+						hypothesis: "rpc-connect",
+						step: "connection",
+						label: "rpc worker protocol connected",
+					},
+				}),
+				onDisconnect: Effect.logWarning("motel debug async ingest worker disconnected", {
+					debug: {
+						session: "motel-ingest-503-2026-04-20",
+						hypothesis: "rpc-connect",
+						step: "disconnect",
+						label: "rpc worker protocol disconnected",
+					},
+				}),
+			}),
+		),
+	),
+	// #endregion motel debug
 )
+
+const summarizeTracePayload = (input: { readonly payload: any }) => ({
+	resourceSpans: Array.isArray(input.payload?.resourceSpans) ? input.payload.resourceSpans.length : 0,
+	spanCount: Array.isArray(input.payload?.resourceSpans)
+		? input.payload.resourceSpans.reduce((count: number, resourceSpans: any) =>
+			count + (Array.isArray(resourceSpans?.scopeSpans)
+				? resourceSpans.scopeSpans.reduce((scopeCount: number, scopeSpans: any) =>
+					scopeCount + (Array.isArray(scopeSpans?.spans) ? scopeSpans.spans.length : 0), 0)
+				: 0), 0)
+		: 0,
+})
+
+const summarizeLogPayload = (input: { readonly payload: any }) => ({
+	resourceLogs: Array.isArray(input.payload?.resourceLogs) ? input.payload.resourceLogs.length : 0,
+	logCount: Array.isArray(input.payload?.resourceLogs)
+		? input.payload.resourceLogs.reduce((count: number, resourceLogs: any) =>
+			count + (Array.isArray(resourceLogs?.scopeLogs)
+				? resourceLogs.scopeLogs.reduce((scopeCount: number, scopeLogs: any) =>
+					scopeCount + (Array.isArray(scopeLogs?.logRecords) ? scopeLogs.logRecords.length : 0), 0)
+				: 0), 0)
+		: 0,
+})
 
 export const AsyncIngestLive = Layer.effect(
 	AsyncIngest,
@@ -62,9 +109,65 @@ export const AsyncIngestLive = Layer.effect(
 				Effect.provideService(Scope.Scope, scope),
 			)
 		}).pipe(Effect.cached)
-		return {
-			ingestTraces: (input, options) => Effect.flatMap(getClient, (client) => client.ingestTraces(input, options)),
-			ingestLogs: (input, options) => Effect.flatMap(getClient, (client) => client.ingestLogs(input, options)),
-		}
+		return AsyncIngest.of({
+			ingestTraces: (input, options) =>
+				Effect.gen(function*() {
+					yield* Effect.logInfo("motel debug async ingest traces dispatch", {
+						debug: {
+							session: "motel-ingest-503-2026-04-20",
+							hypothesis: "worker-bootstrap",
+							step: "dispatch",
+							label: "main thread dispatching traces rpc",
+						},
+						...summarizeTracePayload(input),
+					})
+					const client = yield* getClient
+					return yield* client.ingestTraces(input, options).pipe(
+						// #region motel debug
+						Effect.tapCause((cause) =>
+							Effect.logError("motel debug async ingest traces rpc failed", {
+								debug: {
+									session: "motel-ingest-503-2026-04-20",
+									hypothesis: "rpc-connect",
+									step: "rpc-error",
+									label: "main thread traces rpc failed before reply",
+								},
+								cause: Cause.pretty(cause),
+								...summarizeTracePayload(input),
+							}),
+						),
+						// #endregion motel debug
+					)
+				}),
+			ingestLogs: (input, options) =>
+				Effect.gen(function*() {
+					yield* Effect.logInfo("motel debug async ingest logs dispatch", {
+						debug: {
+							session: "motel-ingest-503-2026-04-20",
+							hypothesis: "worker-bootstrap",
+							step: "dispatch",
+							label: "main thread dispatching logs rpc",
+						},
+						...summarizeLogPayload(input),
+					})
+					const client = yield* getClient
+					return yield* client.ingestLogs(input, options).pipe(
+						// #region motel debug
+						Effect.tapCause((cause) =>
+							Effect.logError("motel debug async ingest logs rpc failed", {
+								debug: {
+									session: "motel-ingest-503-2026-04-20",
+									hypothesis: "rpc-connect",
+									step: "rpc-error",
+									label: "main thread logs rpc failed before reply",
+								},
+								cause: Cause.pretty(cause),
+								...summarizeLogPayload(input),
+							}),
+						),
+						// #endregion motel debug
+					)
+				}),
+		})
 	}),
 )

@@ -19,12 +19,36 @@
 
 import { BunRuntime } from "@effect/platform-bun"
 import * as BunWorkerRunner from "@effect/platform-bun/BunWorkerRunner"
-import { Effect, Layer } from "effect"
+import { Cause, Effect, Layer } from "effect"
 import * as RpcSerialization from "effect/unstable/rpc/RpcSerialization"
 import * as RpcServer from "effect/unstable/rpc/RpcServer"
 import type { OtlpLogExportRequest, OtlpTraceExportRequest } from "../otlp.ts"
 import { IngestError, IngestRpcs } from "./ingestRpc.ts"
 import { TelemetryStore, TelemetryStoreWorkerLive } from "./TelemetryStore.ts"
+
+const summarizeTracePayload = (payload: OtlpTraceExportRequest) => ({
+	resourceSpans: Array.isArray(payload?.resourceSpans) ? payload.resourceSpans.length : 0,
+	spanCount: Array.isArray(payload?.resourceSpans)
+		? payload.resourceSpans.reduce((count: number, resourceSpans) =>
+			count + (resourceSpans.scopeSpans ?? []).reduce(
+				(scopeCount: number, scopeSpans: NonNullable<typeof resourceSpans.scopeSpans>[number]) =>
+					scopeCount + (scopeSpans.spans?.length ?? 0),
+				0,
+			), 0)
+		: 0,
+})
+
+const summarizeLogPayload = (payload: OtlpLogExportRequest) => ({
+	resourceLogs: Array.isArray(payload?.resourceLogs) ? payload.resourceLogs.length : 0,
+	logCount: Array.isArray(payload?.resourceLogs)
+		? payload.resourceLogs.reduce((count: number, resourceLogs) =>
+			count + (resourceLogs.scopeLogs ?? []).reduce(
+				(scopeCount: number, scopeLogs: NonNullable<typeof resourceLogs.scopeLogs>[number]) =>
+					scopeCount + (scopeLogs.logRecords?.length ?? 0),
+				0,
+			), 0)
+		: 0,
+})
 
 // Wire the two RPC methods to the existing TelemetryStore service.
 // The store's ingest methods already carry their own Effect.fn spans,
@@ -37,13 +61,65 @@ const IngestHandlers = IngestRpcs.toLayer(
 		const store = yield* TelemetryStore
 		return {
 			ingestTraces: ({ payload }) =>
-				store.ingestTraces(payload as OtlpTraceExportRequest).pipe(
-					Effect.mapError((cause) => new IngestError({ message: String(cause) })),
-				),
+				Effect.gen(function*() {
+					const tracePayload = payload as OtlpTraceExportRequest
+					yield* Effect.logInfo("motel debug worker ingest traces entry", {
+						debug: {
+							session: "motel-ingest-503-2026-04-20",
+							hypothesis: "store-write",
+							step: "worker-entry",
+							label: "worker received traces rpc",
+						},
+						...summarizeTracePayload(tracePayload),
+					})
+					return yield* store.ingestTraces(tracePayload).pipe(
+						// #region motel debug
+						Effect.tapCause((cause) =>
+							Effect.logError("motel debug worker ingest traces failed", {
+								debug: {
+									session: "motel-ingest-503-2026-04-20",
+									hypothesis: "store-write",
+									step: "worker-error",
+									label: "worker traces handler failed",
+								},
+								cause: Cause.pretty(cause),
+								...summarizeTracePayload(tracePayload),
+							}),
+						),
+						Effect.mapError((cause) => new IngestError({ message: String(cause) })),
+						// #endregion motel debug
+					)
+				}),
 			ingestLogs: ({ payload }) =>
-				store.ingestLogs(payload as OtlpLogExportRequest).pipe(
-					Effect.mapError((cause) => new IngestError({ message: String(cause) })),
-				),
+				Effect.gen(function*() {
+					const logPayload = payload as OtlpLogExportRequest
+					yield* Effect.logInfo("motel debug worker ingest logs entry", {
+						debug: {
+							session: "motel-ingest-503-2026-04-20",
+							hypothesis: "store-write",
+							step: "worker-entry",
+							label: "worker received logs rpc",
+						},
+						...summarizeLogPayload(logPayload),
+					})
+					return yield* store.ingestLogs(logPayload).pipe(
+						// #region motel debug
+						Effect.tapCause((cause) =>
+							Effect.logError("motel debug worker ingest logs failed", {
+								debug: {
+									session: "motel-ingest-503-2026-04-20",
+									hypothesis: "store-write",
+									step: "worker-error",
+									label: "worker logs handler failed",
+								},
+								cause: Cause.pretty(cause),
+								...summarizeLogPayload(logPayload),
+							}),
+						),
+						Effect.mapError((cause) => new IngestError({ message: String(cause) })),
+						// #endregion motel debug
+					)
+				}),
 		}
 	}),
 )
