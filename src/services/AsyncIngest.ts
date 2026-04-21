@@ -55,14 +55,16 @@ export const AsyncIngestLive = Layer.effect(
 		// spawn the worker and make /api/health wait on the worker's SQLite
 		// bootstrap. Cache a lazy initializer instead so the worker only starts
 		// on the first ingest request, but is still shared thereafter.
-		const getClient = yield* RpcClient.make(IngestRpcs).pipe(
-			Effect.provide(WorkerProtocol),
-			Effect.cached,
-		)
-		const withScope = <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.provideService(effect, Scope.Scope, scope)
+		const getClient = yield* Effect.gen(function*() {
+			const protocolContext = yield* Layer.buildWithScope(WorkerProtocol, scope)
+			return yield* RpcClient.make(IngestRpcs).pipe(
+				Effect.provide(protocolContext),
+				Effect.provideService(Scope.Scope, scope),
+			)
+		}).pipe(Effect.cached)
 		return {
-			ingestTraces: (input, options) => Effect.flatMap(withScope(getClient), (client) => client.ingestTraces(input, options)),
-			ingestLogs: (input, options) => Effect.flatMap(withScope(getClient), (client) => client.ingestLogs(input, options)),
+			ingestTraces: (input, options) => Effect.flatMap(getClient, (client) => client.ingestTraces(input, options)),
+			ingestLogs: (input, options) => Effect.flatMap(getClient, (client) => client.ingestLogs(input, options)),
 		}
 	}),
 )

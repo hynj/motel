@@ -87,7 +87,7 @@ export const selectedSpanIndexAtom = Atom.make<number | null>(null).pipe(Atom.ke
 export const selectedAttrIndexAtom = Atom.make(0).pipe(Atom.keepAlive)
 export const detailViewAtom = Atom.make<DetailView>("waterfall").pipe(Atom.keepAlive)
 export const showHelpAtom = Atom.make(false).pipe(Atom.keepAlive)
-export const autoRefreshAtom = Atom.make(false).pipe(Atom.keepAlive)
+export const autoRefreshAtom = Atom.make(true).pipe(Atom.keepAlive)
 export const filterModeAtom = Atom.make(false).pipe(Atom.keepAlive)
 export const filterTextAtom = Atom.make("").pipe(Atom.keepAlive)
 
