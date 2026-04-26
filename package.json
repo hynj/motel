@@ -65,7 +65,7 @@
     "search-spans": "bun run src/cli.ts search-spans",
     "trace-stats": "bun run src/cli.ts trace-stats",
     "log-stats": "bun run src/cli.ts log-stats",
-    "web:dev": "bun run --cwd web dev",
+    "web:dev": "bun run --cwd web dev --host",
     "web:build": "bun run --cwd web build",
     "story:chat": "bun run src/storybook/aiChatStory.tsx",
     "bench:motel-cold-start": "bun run scripts/bench-motel-cold-start.ts",
